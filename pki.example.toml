@@ -1,0 +1,26 @@
+[pki.root]
+cert_path = "identities/root.cert"
+key_path = "identities/root.key"
+depth = 2
+password = "swordfish"
+
+[pki.root.identity]
+locality_name = "Drancy"
+common_name = "My Register"
+country_name = "FR"
+email_address = "my-register@example.com"
+organization_name = "My Register"
+
+[pki.intermediate]
+cert_path = "identities/intermediate.cert"
+key_path = "identities/intermediate.key"
+issuer = "root"
+password = "password"
+depth = 1
+
+[pki.intermediate.identity]
+locality_name = "Magnat L'Etrange"
+common_name = "CertiFarm"
+country_name = "FR"
+email_address = "app@example.com"
+organization_name = "CertiFarm"

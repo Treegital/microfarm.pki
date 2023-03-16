@@ -1,0 +1,5 @@
+dynaconf
+minicli
+cryptography
+pika
+-e git+ssh://github.com/Treegital/branding_iron.git#egg=branding_iron
