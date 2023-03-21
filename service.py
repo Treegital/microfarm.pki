@@ -1,120 +1,107 @@
+import asyncio
 import logging
-import pika
 import threading
 import typing as t
 import dynaconf
+import uuid
+import ormsgpack
+from aiozmq import rpc
 from pathlib import Path
-from bundle import PKI
 from minicli import cli, run
-from branding_iron import keys, certificate
-from cryptography.hazmat.primitives import serialization
-from cryptography import x509
+from aio_pika import Message, connect, DeliveryMode
+from aio_pika.abc import (
+    AbstractChannel, AbstractConnection, AbstractQueue,
+    AbstractIncomingMessage
+)
+from models import manager, Request, Certificate
 
 
-def generate_password(length: int) -> str:
-    if length < 8:
-        raise ValueError(
-            "Password length should be equal or superior to 8 characters.")
+class PKIService(rpc.AttrHandler):
+    connection: AbstractConnection
+    channel: AbstractChannel
+    callback_queue: AbstractQueue
+    loop: asyncio.AbstractEventLoop
 
-    chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-    from os import urandom
-    return "".join(chars[c % len(chars)] for c in urandom(length))
+    def __init__(self, manager) -> None:
+        self.manager = manager
+        self.loop = asyncio.get_running_loop()
 
+    async def connect(self) -> "PKI":
+        self.connection = await connect(
+            "amqp://guest:guest@localhost/", loop=self.loop,
+        )
+        self.channel = await self.connection.channel()
+        self.request_queue = await self.channel.declare_queue(
+            'pki.requests',
+            durable=True,
+            exclusive=False,
+            auto_delete=False
+        )
+        self.certificate_queue = await self.channel.declare_queue(
+            'pki.certificates',
+            durable=True,
+            exclusive=False,
+            auto_delete=False
+        )
+        return self
 
-def data_from_file(path: t.Union[Path, str]) -> t.Optional[bytes]:
-    path = Path(path)  # idempotent.
-    if not path.exists():
-        raise FileNotFoundError('{path!r} does not exist.')
+    async def persist(self):
+        async with self.certificate_queue.iterator() as qiterator:
+            message: AbstractIncomingMessage
+            async for message in qiterator:
+                try:
+                    certificate = ormsgpack.unpackb(message.body)
+                    async with self.manager:
+                        async with self.manager.connection():
+                            request = await Certificate.create(
+                                request_id=message.correlation_id,
+                                **certificate['data']
+                            )
+                except Exception as err:
+                    print(err)
+                    await message.reject(requeue=False)
 
-    if not path.is_file():
-        raise TypeError('{path!r} should be a file.')
-
-    with path.open('rb') as fd:
-        data = fd.read()
-
-    return data
-
-
-def load_pki(settings):
-    root_cert = certificate.pem_decrypt_x509(
-        data_from_file(settings.root.cert_path)
-    )
-    intermediate_cert = certificate.pem_decrypt_x509(
-        data_from_file(settings.intermediate.cert_path)
-    )
-    intermediate_key = keys.pem_decrypt_key(
-        data_from_file(settings.intermediate.key_path),
-        settings.intermediate.password.encode()
-    )
-    return PKI(intermediate_cert, intermediate_key, [root_cert])
-
-
-def create_connection():
-    credentials = pika.PlainCredentials("guest", "guest")
-    parameters = pika.ConnectionParameters(
-        "localhost", credentials=credentials
-    )
-    connection = pika.BlockingConnection(parameters)
-    return connection
-
-
-def certificate_handler(pki: PKI, stop: threading.Event):
-    connection = create_connection()
-    try:
-        channel = connection.channel()
-        generator = channel.consume("pki.certificate", inactivity_timeout=2)
-        for method_frame, properties, body in generator:
-            if (method_frame, properties, body) == (None, None, None):
-                # Inactivity : Check for flag
-                if stop.is_set():
-                    break
-            else:
-                data = orjson.loads(body)
-                print(f'generating certificate {data}')
-                subject = x509.Name.from_rfc4514_string(data['identity'])
-                bundle = pki.create_bundle(subject)
-                password = bytes(generate_password(12), 'ascii')
-                result = {
-                    'profile': data['profile'],
-                    'account': data['user'],
-                    'serial_number': str(bundle.certificate.serial_number),
-                    'fingerprint': bundle.fingerprint,
-                    'pem_cert': bundle.pem_cert,
-                    'pem_chain': bundle.pem_chain,
-                    'pem_private_key': bundle.dump_private_key(password),
-                    'valid_from': bundle.certificate.not_valid_before,
-                    'valid_until': bundle.certificate.not_valid_after
-                }
-                channel.basic_publish(
-                    exchange='service.persistence',
-                    routing_key='persistence.certificate.create',
-                    body=ormsgpack.packb(result),
-                    properties=pika.BasicProperties(
-                        content_type='application/json',
-                        delivery_mode=pika.DeliveryMode.Transient)
+    @rpc.method
+    async def generate_certificate(self, data: dict) -> dict:
+        correlation_id = str(uuid.uuid4())
+        async with self.manager:
+            async with self.manager.connection():
+                request = await Request.create(
+                    id=correlation_id,
+                    requester=data['user'],
+                    identity=data['identity'],
                 )
-                channel.basic_ack(method_frame.delivery_tag)
-    finally:
-        if connection.is_open:
-            connection.close()
+
+                await self.channel.default_exchange.publish(
+                    Message(
+                        ormsgpack.packb(data),
+                        content_type="application/msgpack",
+                        correlation_id=correlation_id,
+                        reply_to=self.certificate_queue.name,
+                        delivery_mode=DeliveryMode.PERSISTENT
+                    ),
+                    routing_key=self.request_queue.name,
+                )
+
+        return {'request': correlation_id}
 
 
 @cli
-def serve(config: Path):
-    settings = dynaconf.Dynaconf(settings_files=[config])
-    pki = load_pki(settings.pki)
-    stopEvent = threading.Event()
-    cert_service = threading.Thread(
-        target=certificate_handler,
-        args=[pki, stopEvent]
-    )
-    cert_service.start()
-    try:
-        stopEvent.wait()
-    except KeyboardInterrupt:
-        stopEvent.set()
-    finally:
-        cert_service.join()
+async def serve(host: str = "127.0.0.1", port: int = 7000):
+    async with manager:
+        async with manager.connection():
+            await Request.create_table()
+            await Certificate.create_table()
+
+    service = await PKIService(manager).connect()
+    server = await rpc.serve_rpc(service, bind=f'tcp://{host}:{port}')
+    response = await service.generate_certificate({
+        'user': 'test',
+        'identity': ("ST=Florida,O=IBM,OU=Marketing,L=Tampa,"
+                     "1.2.840.113549.1.9.1=johndoe@example.com,"
+                     "C=US,CN=John Doe")
+    })
+    await service.persist()
 
 
 if __name__ == '__main__':
