@@ -11,7 +11,8 @@ from aio_pika.abc import AbstractIncomingMessage
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from branding_iron import keys, certificate
-from bundle import PKI
+from .bundle import PKI
+from .pki import create_pki
 
 
 def generate_password(length: int) -> str:
@@ -115,11 +116,17 @@ class Minter:
 
 
 @cli
-async def serve(config: Path):
+async def work(config: Path):
     settings = dynaconf.Dynaconf(settings_files=[config])
     pki: PKI = load_pki(settings.pki)
     service = Minter(pki)
     await service.handler()
+
+
+@cli
+def generate(config: Path):
+    settings = dynaconf.Dynaconf(settings_files=[config])
+    create_pki(settings.pki)
 
 
 if __name__ == "__main__":

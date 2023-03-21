@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "microfarm_pki"
+version = "0.1"
+authors = [
+    {name = "Souheil Chelfouh", email = "sch@treegital.fr"},
+]
+requires-python = ">=3.9"
+classifiers = ["License :: OSI Approved :: MIT License"]
+dependencies = [
+    "dynaconf",
+    "minicli",
+    "ormsgpack",
+    "msgpack",
+    "peewee",
+    "peewee_aio[aiosqlite]",
+    "cryptography",
+    "aio-pika",
+    "aiozmq",
+]
+
+[project.scripts]
+mfpki_service = "microfarm_pki.service:run"
+mfpki_worker = "microfarm_pki.worker:run"
+
+[tool.setuptools.packages.find]
+where = ["."]

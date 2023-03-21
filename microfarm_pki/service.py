@@ -13,7 +13,7 @@ from aio_pika.abc import (
     AbstractChannel, AbstractConnection, AbstractQueue,
     AbstractIncomingMessage
 )
-from models import manager, Request, Certificate
+from .models import manager, Request, Certificate
 
 
 class PKIService(rpc.AttrHandler):

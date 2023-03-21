@@ -1,7 +1,5 @@
-import dynaconf
 import typing as t
 from pathlib import Path
-from minicli import cli, run
 from branding_iron import keys, pki, certificate
 from branding_iron.identity import Identity
 
@@ -79,13 +77,3 @@ def create_pki(settings, debug: bool = False):
             settings.intermediate.password.encode()
         )
     )
-
-
-@cli
-def create(config: Path):
-    settings = dynaconf.Dynaconf(settings_files=[config])
-    create_pki(settings.pki)
-
-
-if __name__ == '__main__':
-    run()

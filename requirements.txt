@@ -1,10 +1,2 @@
-dynaconf
-minicli
-ormsgpack
-msgpack
-peewee
-peewee_aio[aiosqlite]
-cryptography
-aio-pika
-aiozmq
+.
 -e git+ssh://github.com/Treegital/branding_iron.git#egg=branding_iron
