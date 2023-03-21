@@ -4,14 +4,13 @@ import logging
 import ormsgpack
 import typing as t
 from pathlib import Path
-
-from cryptography import x509
-from cryptography.hazmat.primitives import serialization
-from branding_iron import keys, certificate
 from minicli import cli, run
 
 from aio_pika import Message, connect
 from aio_pika.abc import AbstractIncomingMessage
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
+from branding_iron import keys, certificate
 from bundle import PKI
 
 
