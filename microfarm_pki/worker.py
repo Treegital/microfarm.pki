@@ -1,5 +1,4 @@
 import asyncio
-import dynaconf
 import logging
 import ormsgpack
 import typing as t
@@ -28,10 +27,10 @@ def generate_password(length: int) -> str:
 def data_from_file(path: t.Union[Path, str]) -> t.Optional[bytes]:
     path = Path(path)  # idempotent.
     if not path.exists():
-        raise FileNotFoundError('{path!r} does not exist.')
+        raise FileNotFoundError(f'`{path}` does not exist.')
 
     if not path.is_file():
-        raise TypeError('{path!r} should be a file.')
+        raise TypeError(f'`{path}` should be a file.')
 
     with path.open('rb') as fd:
         data = fd.read()
@@ -41,14 +40,14 @@ def data_from_file(path: t.Union[Path, str]) -> t.Optional[bytes]:
 
 def load_pki(settings):
     root_cert = certificate.pem_decrypt_x509(
-        data_from_file(settings.root.cert_path)
+        data_from_file(settings['root']['cert_path'])
     )
     intermediate_cert = certificate.pem_decrypt_x509(
-        data_from_file(settings.intermediate.cert_path)
+        data_from_file(settings['intermediate']['cert_path'])
     )
     intermediate_key = keys.pem_decrypt_key(
-        data_from_file(settings.intermediate.key_path),
-        settings.intermediate.password.encode()
+        data_from_file(settings['intermediate']['key_path']),
+        settings['intermediate']['password'].encode()
     )
     return PKI(intermediate_cert, intermediate_key, [root_cert])
 
@@ -76,9 +75,9 @@ class Minter:
             }
         }
 
-    async def handler(self) -> None:
+    async def handler(self, config: dict) -> None:
         # Perform connection
-        connection = await connect("amqp://guest:guest@localhost/")
+        connection = await connect(config['url'])
 
         # Creating a channel
         channel = await connection.channel()
@@ -86,10 +85,7 @@ class Minter:
 
         # Declaring queues
         request_queue = await channel.declare_queue(
-            'pki.requests',
-            durable=True,
-            exclusive=False,
-            auto_delete=False
+            **config['requests']
         )
         print(" [x] Awaiting Certificate requests")
 
@@ -110,23 +106,36 @@ class Minter:
                             ),
                             routing_key=message.reply_to,
                         )
-                        print("Minting complete")
                 except Exception:
                     logging.exception(f"Processing error for {message!r}")
 
 
 @cli
 async def work(config: Path):
-    settings = dynaconf.Dynaconf(settings_files=[config])
-    pki: PKI = load_pki(settings.pki)
+    import tomli
+    import logging.config
+
+    assert config.is_file()
+    with config.open("rb") as f:
+        settings = tomli.load(f)
+
+    if logconf := settings.get('logging'):
+        logging.config.dictConfigClass(logconf).configure()
+
+    pki: PKI = load_pki(settings['pki'])
     service = Minter(pki)
-    await service.handler()
+    await service.handler(settings['amqp'])
 
 
 @cli
 def generate(config: Path):
-    settings = dynaconf.Dynaconf(settings_files=[config])
-    create_pki(settings.pki)
+    import tomli
+
+    assert config.is_file()
+    with config.open("rb") as f:
+        settings = tomli.load(f)
+
+    create_pki(settings['pki'])
 
 
 if __name__ == "__main__":

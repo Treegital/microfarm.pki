@@ -15,8 +15,8 @@ def data_to_file(path: t.Union[Path, str], data: bytes):
         fd.write(data)
 
 
-def create_root_certificate(settings):
-    identity = Identity(**settings.identity)
+def create_root_certificate(settings: dict):
+    identity = Identity(**settings['identity'])
     private_key = keys.new_ed448_key()
 
     startdate = certificate.validity_start()
@@ -32,7 +32,7 @@ def create_root_certificate(settings):
 
 
 def create_intermediate_certificate(settings, issuer_cert, issuer_key):
-    identity = Identity(**settings.identity)
+    identity = Identity(**settings['identity'])
     private_key = keys.new_ed25519_key()
     startdate = certificate.validity_start()
     enddate = certificate.validity_end(startdate, delta=1095)  # 3 years
@@ -47,33 +47,33 @@ def create_intermediate_certificate(settings, issuer_cert, issuer_key):
     return cert, private_key
 
 
-def create_pki(settings, debug: bool = False):
-    root, root_key = create_root_certificate(settings.root)
+def create_pki(settings: dict, debug: bool = False):
+    root, root_key = create_root_certificate(settings['root'])
     data_to_file(
-        settings.root.cert_path,
+        settings['root']['cert_path'],
         certificate.pem_encrypt_x509(root)
     )
     data_to_file(
-        settings.root.key_path,
+        settings['root']['key_path'],
         keys.pem_encrypt_key(
             root_key,
-            settings.root.password.encode()
+            settings['root']['password'].encode()
         )
     )
 
     inter, inter_key = create_intermediate_certificate(
-        settings.intermediate,
+        settings['intermediate'],
         root,
         root_key
     )
     data_to_file(
-        settings.intermediate.cert_path,
+        settings['intermediate']['cert_path'],
         certificate.pem_encrypt_x509(inter)
     )
     data_to_file(
-        settings.intermediate.key_path,
+        settings['intermediate']['key_path'],
         keys.pem_encrypt_key(
             inter_key,
-            settings.intermediate.password.encode()
+            settings['intermediate']['password'].encode()
         )
     )

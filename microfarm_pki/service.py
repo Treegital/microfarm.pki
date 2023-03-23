@@ -2,18 +2,22 @@ import asyncio
 import logging
 import threading
 import typing as t
-import dynaconf
 import uuid
 import ormsgpack
 from aiozmq import rpc
 from pathlib import Path
 from minicli import cli, run
+from peewee_aio import Manager
 from aio_pika import Message, connect, DeliveryMode
 from aio_pika.abc import (
     AbstractChannel, AbstractConnection, AbstractQueue,
     AbstractIncomingMessage
 )
-from .models import manager, Request, Certificate
+from .models import Request, Certificate
+
+
+rpc_logger = logging.getLogger('microfarm_pki.rpc')
+amqp_logger = logging.getLogger('microfarm_pki.amqp')
 
 
 class PKIService(rpc.AttrHandler):
@@ -26,26 +30,19 @@ class PKIService(rpc.AttrHandler):
         self.manager = manager
         self.loop = asyncio.get_running_loop()
 
-    async def connect(self) -> "PKI":
-        self.connection = await connect(
-            "amqp://guest:guest@localhost/", loop=self.loop,
-        )
+    async def connect(self, config) -> "PKI":
+        self.connection = await connect(config['url'], loop=self.loop)
         self.channel = await self.connection.channel()
         self.request_queue = await self.channel.declare_queue(
-            'pki.requests',
-            durable=True,
-            exclusive=False,
-            auto_delete=False
+            **config['requests']
         )
         self.certificate_queue = await self.channel.declare_queue(
-            'pki.certificates',
-            durable=True,
-            exclusive=False,
-            auto_delete=False
+            **config['certificates']
         )
         return self
 
     async def persist(self):
+        amqp_logger.info('Awaiting for generated certificate to persist.')
         async with self.certificate_queue.iterator() as qiterator:
             message: AbstractIncomingMessage
             async for message in qiterator:
@@ -87,20 +84,28 @@ class PKIService(rpc.AttrHandler):
 
 
 @cli
-async def serve(host: str = "127.0.0.1", port: int = 7000):
+async def serve(config: Path) -> None:
+    import tomli
+    import logging.config
+
+    assert config.is_file()
+    with config.open("rb") as f:
+        settings = tomli.load(f)
+
+    if logconf := settings.get('logging'):
+        logging.config.dictConfigClass(logconf).configure()
+
+    manager = Manager(settings['database']['url'])
+    manager.register(Request)
+    manager.register(Certificate)
+
     async with manager:
         async with manager.connection():
-            await Request.create_table()
-            await Certificate.create_table()
+            await manager.create_tables()
 
-    service = await PKIService(manager).connect()
-    server = await rpc.serve_rpc(service, bind=f'tcp://{host}:{port}')
-    response = await service.generate_certificate({
-        'user': 'test',
-        'identity': ("ST=Florida,O=IBM,OU=Marketing,L=Tampa,"
-                     "1.2.840.113549.1.9.1=johndoe@example.com,"
-                     "C=US,CN=John Doe")
-    })
+    service = await PKIService(manager).connect(settings['amqp'])
+    server = await rpc.serve_rpc(service, bind={settings['rpc']['bind']})
+    print(f" [x] PKI Service ({settings['rpc']['bind']})")
     await service.persist()
 
 

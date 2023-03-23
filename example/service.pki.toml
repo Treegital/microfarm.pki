@@ -1,0 +1,48 @@
+[rpc]
+bind = "tcp://127.0.0.1:6000"
+
+[database]
+url = "aiosqlite:///certificates.db"
+
+
+[amqp]
+  url = "amqp://guest:guest@localhost/"
+
+  [amqp.requests]
+    name = "pki.requests"
+    durable = true
+    exclusive = false
+    auto_delete = false
+
+  [amqp.certificates]
+    name = "pki.certificates"
+    durable = true
+    exclusive = false
+    auto_delete = false
+
+
+[logging]
+  version = 1
+  disable_existing_loggers = true
+
+  [logging.formatters]
+    [logging.formatters.standard]
+      format = '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+
+  [logging.handlers]
+     [logging.handlers.default]
+       level = "INFO"
+       formatter = "standard"
+       class = "logging.StreamHandler"
+       stream = "ext://sys.stdout"
+
+  [logging.loggers]
+    [logging.loggers.""]
+      handlers= ['default']
+      level = 'WARNING'
+      propagate = false
+
+    [logging.loggers.microfarm_pki]
+      handlers = ["default"]
+      level = "DEBUG"
+      propagate = false

@@ -1,0 +1,72 @@
+[amqp]
+  url = "amqp://guest:guest@localhost/"
+
+  [amqp.requests]
+      name = "pki.requests"
+      durable = true
+      exclusive = false
+      auto_delete = false
+
+  [amqp.certificates]
+      name = "pki.certificates"
+      durable = true
+      exclusive = false
+      auto_delete = false
+
+
+[pki]
+
+  [pki.root]
+    cert_path = "identities/root.cert"
+    key_path = "identities/root.key"
+    depth = 2
+    password = "swordfish"
+
+  [pki.root.identity]
+    locality_name = "Drancy"
+    common_name = "My Register"
+    country_name = "FR"
+    email_address = "my-register@example.com"
+    organization_name = "My Register"
+
+
+  [pki.intermediate]
+    cert_path = "identities/intermediate.cert"
+    key_path = "identities/intermediate.key"
+    issuer = "root"
+    password = "password"
+    depth = 1
+
+  [pki.intermediate.identity]
+    locality_name = "CertiLand"
+    common_name = "CertiFarm"
+    country_name = "FI"
+    email_address = "app@example.com"
+    organization_name = "CertiFarm"
+
+
+[logging]
+  version = 1
+  disable_existing_loggers = true
+
+  [logging.formatters]
+    [logging.formatters.standard]
+      format = '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+
+  [logging.handlers]
+     [logging.handlers.default]
+       level = "INFO"
+       formatter = "standard"
+       class = "logging.StreamHandler"
+       stream = "ext://sys.stdout"
+
+  [logging.loggers]
+    [logging.loggers.""]
+      handlers= ['default']
+      level = 'WARNING'
+      propagate = false
+
+    [logging.loggers.microfarm_pki]
+      handlers = ["default"]
+      level = "DEBUG"
+      propagate = false

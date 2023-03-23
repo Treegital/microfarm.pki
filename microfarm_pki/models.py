@@ -1,11 +1,8 @@
 import peewee
-from peewee_aio import Manager
+from peewee_aio import AIOModel
 from enum import Enum
 from datetime import datetime
 from cryptography.x509 import ReasonFlags
-
-
-manager = Manager('aiosqlite:///app.db')
 
 
 def creation_date():
@@ -30,7 +27,7 @@ class EnumField(peewee.CharField):
         return self.choices(value)
 
 
-class Request(manager.Model):
+class Request(AIOModel):
 
     class Meta:
         table_name = 'requests'
@@ -41,7 +38,7 @@ class Request(manager.Model):
     creation_date = peewee.DateTimeField(default=creation_date)
 
 
-class Certificate(manager.Model):
+class Certificate(AIOModel):
 
     class Meta:
         table_name = 'certificates'
