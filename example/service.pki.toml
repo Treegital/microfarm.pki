@@ -1,5 +1,6 @@
 [rpc]
-bind = "tcp://127.0.0.1:6000"
+bind = "tcp://127.0.0.1:5400"
+
 
 [database]
 url = "aiosqlite:///certificates.db"
