@@ -1,6 +1,5 @@
 import peewee
 from peewee_aio import AIOModel
-from enum import Enum
 from datetime import datetime
 from cryptography.x509 import ReasonFlags
 

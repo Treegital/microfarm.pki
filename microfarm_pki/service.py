@@ -1,7 +1,5 @@
 import asyncio
 import logging
-import threading
-import typing as t
 import uuid
 import ormsgpack
 from aiozmq import rpc
@@ -26,11 +24,11 @@ class PKIService(rpc.AttrHandler):
     callback_queue: AbstractQueue
     loop: asyncio.AbstractEventLoop
 
-    def __init__(self, manager) -> None:
+    def __init__(self, manager: Manager) -> None:
         self.manager = manager
         self.loop = asyncio.get_running_loop()
 
-    async def connect(self, config) -> "PKI":
+    async def connect(self, config: dict) -> "PKIService":
         self.connection = await connect(config['url'], loop=self.loop)
         self.channel = await self.connection.channel()
         self.request_queue = await self.channel.declare_queue(
@@ -50,7 +48,7 @@ class PKIService(rpc.AttrHandler):
                     certificate = ormsgpack.unpackb(message.body)
                     async with self.manager:
                         async with self.manager.connection():
-                            request = await Certificate.create(
+                            await Certificate.create(
                                 request_id=message.correlation_id,
                                 **certificate['data']
                             )
@@ -63,7 +61,7 @@ class PKIService(rpc.AttrHandler):
         correlation_id = str(uuid.uuid4())
         async with self.manager:
             async with self.manager.connection():
-                request = await Request.create(
+                await Request.create(
                     id=correlation_id,
                     requester=data['user'],
                     identity=data['identity'],
@@ -107,6 +105,7 @@ async def serve(config: Path) -> None:
     server = await rpc.serve_rpc(service, bind={settings['rpc']['bind']})
     print(f" [x] PKI Service ({settings['rpc']['bind']})")
     await service.persist()
+    server.close()
 
 
 if __name__ == '__main__':
