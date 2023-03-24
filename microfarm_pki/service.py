@@ -57,19 +57,22 @@ class PKIService(rpc.AttrHandler):
                     await message.reject(requeue=False)
 
     @rpc.method
-    async def generate_certificate(self, data: dict) -> dict:
+    async def generate_certificate(self, user: str, identity: str) -> dict:
         correlation_id = str(uuid.uuid4())
         async with self.manager:
             async with self.manager.connection():
                 await Request.create(
                     id=correlation_id,
-                    requester=data['user'],
-                    identity=data['identity'],
+                    requester=user,
+                    identity=identity,
                 )
 
                 await self.channel.default_exchange.publish(
                     Message(
-                        ormsgpack.packb(data),
+                        ormsgpack.packb({
+                            "user": user,
+                            "identity": identity
+                        }),
                         content_type="application/msgpack",
                         correlation_id=correlation_id,
                         reply_to=self.certificate_queue.name,
