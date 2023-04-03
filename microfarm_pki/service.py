@@ -24,62 +24,66 @@ class PKIService(rpc.AttrHandler):
     callback_queue: AbstractQueue
     loop: asyncio.AbstractEventLoop
 
-    def __init__(self, manager: Manager) -> None:
+    def __init__(self, manager: Manager, loop = None) -> None:
         self.manager = manager
-        self.loop = asyncio.get_running_loop()
+        if loop is None:
+            loop = asyncio.get_running_loop()
+        self.loop = loop
 
-    async def connect(self, config: dict) -> "PKIService":
-        self.connection = await connect(config['url'], loop=self.loop)
+    async def connect(self, url: str, queues: dict) -> "PKIService":
+        self.connection = await connect(url, loop=self.loop)
         self.channel = await self.connection.channel()
         self.request_queue = await self.channel.declare_queue(
-            **config['requests']
+            **queues['requests']
         )
         self.certificate_queue = await self.channel.declare_queue(
-            **config['certificates']
+            **queues['certificates']
         )
         return self
 
     async def persist(self):
-        amqp_logger.info('Awaiting for generated certificate to persist.')
-        async with self.certificate_queue.iterator() as qiterator:
-            message: AbstractIncomingMessage
-            async for message in qiterator:
-                try:
-                    certificate = ormsgpack.unpackb(message.body)
-                    async with self.manager:
-                        async with self.manager.connection():
-                            await Certificate.create(
-                                request_id=message.correlation_id,
-                                **certificate['data']
-                            )
-                except Exception as err:
-                    print(err)
-                    await message.reject(requeue=False)
+        async with self.connection:
+            amqp_logger.info('Awaiting for generated certificate to persist.')
+            async with self.certificate_queue.iterator() as qiterator:
+                message: AbstractIncomingMessage
+                async for message in qiterator:
+                    try:
+                        certificate = ormsgpack.unpackb(message.body)
+                        async with self.manager:
+                            async with self.manager.connection():
+                                await Certificate.create(
+                                    request_id=message.correlation_id,
+                                    **certificate['data']
+                                )
+                    except Exception as err:
+                        print(err)
+                        await message.reject(requeue=False)
 
     @rpc.method
     async def generate_certificate(self, user: str, identity: str) -> dict:
         correlation_id = str(uuid.uuid4())
-        async with self.manager:
-            async with self.manager.connection():
-                await Request.create(
-                    id=correlation_id,
-                    requester=user,
-                    identity=identity,
-                )
+        async with self.connection:
+            async with self.manager:
+                async with self.manager.connection():
+                    await Request.create(
+                        id=correlation_id,
+                        requester=user,
+                        identity=identity,
+                    )
 
-                await self.channel.default_exchange.publish(
-                    Message(
-                        ormsgpack.packb({
-                            "user": user,
-                            "identity": identity
-                        }),
-                        content_type="application/msgpack",
-                        correlation_id=correlation_id,
-                        reply_to=self.certificate_queue.name,
-                        delivery_mode=DeliveryMode.PERSISTENT
-                    ),
-                    routing_key=self.request_queue.name,
-                )
+                    await self.channel.default_exchange.publish(
+                        Message(
+                            ormsgpack.packb({
+                                "user": user,
+                                "identity": identity
+                            }),
+                            content_type="application/msgpack",
+                            correlation_id=correlation_id,
+                            reply_to=self.certificate_queue.name,
+                            delivery_mode=DeliveryMode.PERSISTENT
+                        ),
+                        routing_key=self.request_queue.name,
+                    )
 
         return {'request': correlation_id}
 
@@ -104,7 +108,10 @@ async def serve(config: Path) -> None:
         async with manager.connection():
             await manager.create_tables()
 
-    service = await PKIService(manager).connect(settings['amqp'])
+    service = await PKIService(manager).connect(
+        settings['amqp']['url'],
+        settings['amqp']
+    )
     server = await rpc.serve_rpc(service, bind={settings['rpc']['bind']})
     print(f" [x] PKI Service ({settings['rpc']['bind']})")
     await service.persist()

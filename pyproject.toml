@@ -22,6 +22,13 @@ dependencies = [
     "tomli",
 ]
 
+[project.optional-dependencies]
+test = [
+  "pytest",
+  "pytest-asyncio",
+  "testing.rabbitmq",
+]
+
 [project.scripts]
 mfpki_service = "microfarm_pki.service:run"
 mfpki_worker = "microfarm_pki.worker:run"
