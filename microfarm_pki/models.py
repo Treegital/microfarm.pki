@@ -2,6 +2,7 @@ import peewee
 from peewee_aio import AIOModel
 from datetime import datetime
 from cryptography.x509 import ReasonFlags
+from peewee import IntegrityError
 
 
 def creation_date():
@@ -52,4 +53,5 @@ class Certificate(AIOModel):
     creation_date = peewee.DateTimeField(default=creation_date)
     revocation_date = peewee.DateTimeField(null=True)
     revocation_reason = EnumField(ReasonFlags, null=True)
-    request_id = peewee.ForeignKeyField(Request, backref='certificate')
+    request_id = peewee.ForeignKeyField(
+        Request, backref='certificate', unique=True)

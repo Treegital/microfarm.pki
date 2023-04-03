@@ -72,39 +72,41 @@ class Minter:
             }
         }
 
-    async def handler(self, config: dict) -> None:
+    async def handler(self, url, queues: dict) -> None:
         # Perform connection
-        connection = await connect(config['url'])
+        connection = await connect(url)
 
-        # Creating a channel
-        channel = await connection.channel()
-        exchange = channel.default_exchange
+        async with connection:
+            # Creating a channel
+            channel = await connection.channel()
+            exchange = channel.default_exchange
 
-        # Declaring queues
-        request_queue = await channel.declare_queue(
-            **config['requests']
-        )
-        print(" [x] Awaiting Certificate requests")
+            # Declaring queues
+            request_queue = await channel.declare_queue(
+                **queues['requests']
+            )
+            print(" [x] Awaiting Certificate requests")
 
-        # Start listening the queue with name 'hello'
-        async with request_queue.iterator() as qiterator:
-            message: AbstractIncomingMessage
-            async for message in qiterator:
-                try:
-                    async with message.process(requeue=True):
-                        assert message.reply_to is not None
-                        data = ormsgpack.unpackb(message.body)
-                        result = self.mint(data)
-                        response = ormsgpack.packb(result)
-                        await exchange.publish(
-                            Message(
-                                body=response,
-                                correlation_id=message.correlation_id,
-                            ),
-                            routing_key=message.reply_to,
-                        )
-                except Exception:
-                    logging.exception(f"Processing error for {message!r}")
+            # Start listening the queue with name 'hello'
+            async with request_queue.iterator() as qiterator:
+                message: AbstractIncomingMessage
+                async for message in qiterator:
+                    try:
+                        async with message.process(requeue=True):
+                            assert message.reply_to is not None
+                            data = ormsgpack.unpackb(message.body)
+                            result = self.mint(data)
+                            response = ormsgpack.packb(result)
+                            await exchange.publish(
+                                Message(
+                                    body=response,
+                                    correlation_id=message.correlation_id,
+                                ),
+                                routing_key=message.reply_to,
+                            )
+                    except Exception:
+                        logging.exception(
+                            f"Processing error for {message!r}")
 
 
 @cli

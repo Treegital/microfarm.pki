@@ -104,33 +104,19 @@ async def db_manager(tmpdir_factory):
 
 @pytest_asyncio.fixture(scope="function")
 async def service(db_manager, event_loop, rabbitmq):
-    service = PKIService(db_manager, loop=event_loop)
-    await service.connect(rabbitmq.url(), QUEUES)
+    service = PKIService(
+        db_manager,
+        url=rabbitmq.url(),
+        queues=QUEUES,
+        loop=event_loop
+    )
     return service
 
 
-@pytest_asyncio.fixture(scope="function")
-async def pki_amqpservice(service, event_loop, rabbitmq):
-    cancel_handle = asyncio.ensure_future(
-        service.persist(), loop=event_loop
-    )
-    try:
-        yield service
-    finally:
-        cancel_handle.cancel()
-
-
-@pytest_asyncio.fixture(scope="function")
-async def pki_amqpworker(pki, event_loop, rabbitmq):
+@pytest.fixture(scope="function")
+def minter(pki, event_loop, rabbitmq):
     service = Minter(pki)
-    cancel_handle = asyncio.ensure_future(
-        service.handler(rabbitmq.url()),
-        loop=event_loop
-    )
-    try:
-        yield service
-    finally:
-        cancel_handle.cancel()
+    return service.handler(rabbitmq.url(), QUEUES)
 
 
 @pytest_asyncio.fixture(scope="function")
