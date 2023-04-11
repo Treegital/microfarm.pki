@@ -1,8 +1,14 @@
-import peewee
-from peewee_aio import AIOModel
+import uuid
+import asyncio
+from sqlalchemy import select
 from datetime import datetime
+from sqlalchemy import ForeignKey
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from sqlalchemy.orm import Mapped, mapped_column, registry, relationship, selectinload
 from cryptography.x509 import ReasonFlags
-from peewee import IntegrityError
+
+
+reg = registry()
 
 
 def creation_date():
@@ -10,48 +16,42 @@ def creation_date():
     return datetime.utcnow()
 
 
-class EnumField(peewee.CharField):
+@reg.mapped_as_dataclass
+class Request:
 
-    def __init__(self, choices, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.choices = choices
+    __tablename__ = "requests"
 
-    def db_value(self, value):
-        if value is None:
-            return None
-        return value.value
+    requester: Mapped[str]
+    identity: Mapped[str]
 
-    def python_value(self, value):
-        if value is None and self.null:
-            return value
-        return self.choices(value)
+    id: Mapped[str] = mapped_column(primary_key=True)
 
+    creation_date: Mapped[datetime] = mapped_column(
+        insert_default=creation_date, default=None)
 
-class Request(AIOModel):
-
-    class Meta:
-        table_name = 'requests'
-
-    id = peewee.UUIDField(primary_key=True)
-    requester = peewee.CharField()
-    identity = peewee.CharField()
-    creation_date = peewee.DateTimeField(default=creation_date)
+    certificate: Mapped["Certificate"] = relationship(
+        back_populates="request", default=None
+    )
 
 
-class Certificate(AIOModel):
+@reg.mapped_as_dataclass
+class Certificate:
+    __tablename__ = "certificates"
 
-    class Meta:
-        table_name = 'certificates'
+    serial_number: Mapped[str] = mapped_column(primary_key=True)
+    fingerprint: Mapped[str]
+    account: Mapped[str]
+    pem_cert: Mapped[bytes]
+    pem_chain: Mapped[bytes]
+    pem_private_key: Mapped[bytes]
+    valid_from: Mapped[datetime]
+    valid_until: Mapped[datetime]
+    request_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("requests.id")
+    )
 
-    serial_number = peewee.CharField(primary_key=True)
-    fingerprint = peewee.CharField(unique=True)
-    pem_cert = peewee.BlobField()
-    pem_chain = peewee.BlobField()
-    pem_private_key = peewee.BlobField()
-    valid_from = peewee.DateTimeField()
-    valid_until = peewee.DateTimeField()
-    creation_date = peewee.DateTimeField(default=creation_date)
-    revocation_date = peewee.DateTimeField(null=True)
-    revocation_reason = EnumField(ReasonFlags, null=True)
-    request_id = peewee.ForeignKeyField(
-        Request, backref='certificate', unique=True)
+    creation_date: Mapped[datetime] = mapped_column(
+        insert_default=creation_date, default=None)
+    revocation_date: Mapped[datetime] = mapped_column(default=None)
+    revocation_reason: Mapped[ReasonFlags] = mapped_column(default=None)
+    request: Mapped[Request] = relationship(init=False)

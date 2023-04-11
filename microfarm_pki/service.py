@@ -5,14 +5,14 @@ import ormsgpack
 from aiozmq import rpc
 from pathlib import Path
 from minicli import cli, run
-from peewee_aio import Manager
-from peewee import JOIN
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from aio_pika import Message, connect, DeliveryMode
 from aio_pika.abc import (
     AbstractChannel, AbstractConnection, AbstractQueue,
     AbstractIncomingMessage
 )
-from .models import Request, Certificate, IntegrityError
+from .models import reg, Request, Certificate
 
 
 rpc_logger = logging.getLogger('microfarm_pki.rpc')
@@ -25,8 +25,8 @@ class PKIService(rpc.AttrHandler):
     callback_queue: AbstractQueue
     loop: asyncio.AbstractEventLoop
 
-    def __init__(self, manager: Manager, url: str, queues: dict, loop = None) -> None:
-        self.manager = manager
+    def __init__(self, session, url: str, queues: dict, loop = None) -> None:
+        self.session = session
         self.url = url
         if loop is None:
             loop = asyncio.get_running_loop()
@@ -50,13 +50,17 @@ class PKIService(rpc.AttrHandler):
                 async for message in qiterator:
                     try:
                         certificate = ormsgpack.unpackb(message.body)
-                        async with self.manager:
-                            async with self.manager.connection():
+                        async with self.session() as session:
+                            async with session.begin():
+                                import pdb
+                                pdb.set_trace()
                                 data = certificate['data']
-                                await Certificate.create(
+                                item = Certificate(
                                     request_id=message.correlation_id,
                                     **data
                                 )
+                                session.add(item)
+
                         self.results[message.correlation_id].set_result(
                             data['serial_number']
                         )
@@ -67,30 +71,26 @@ class PKIService(rpc.AttrHandler):
 
     @rpc.method
     async def get_certificate(self, request_id: str):
-        async with self.manager:
-            async with self.manager.connection():
-                reqs = await self.manager.prefetch(
-                    Request.select().where(Request.id == request_id),
-                    Certificate
-                )
-                if not reqs:
-                    return {"err": "Unknown certificate request"}
-                else:
-                    req = reqs[0]
-                    if not req.certificate:
-                        return {
-                            "request_id": request_id,
-                            "status": "pending"
-                        }
-                    else:
-                        return {
-                            "data": {}
-                        }
+        async with self.session() as session:
+            result = await session.execute(
+                select(Request)
+                .where(Request.id == request_id)
+                .options(selectinload(Request.certificate))
+            )
+            req = result.scalars().one()
+            if not req.certificate:
+                return {
+                    "request_id": request_id,
+                    "status": "pending"
+                }
+            else:
+                return {
+                    "data": {}
+                }
 
     @rpc.method
     async def generate_certificate(self, user: str, identity: str) -> dict:
-        correlation_id = str(uuid.uuid4())
-
+        correlation_id = uuid.uuid4().hex
         connection = await connect(self.url, loop=self.loop)
         async with connection:
             channel = await connection.channel()
@@ -101,13 +101,14 @@ class PKIService(rpc.AttrHandler):
             request_queue = await channel.declare_queue(
                 **self.queues['requests']
             )
-            async with self.manager:
-                async with self.manager.connection():
-                    await Request.create(
+            async with self.session() as session:
+                async with session.begin():
+                    item = Request(
                         id=correlation_id,
                         requester=user,
                         identity=identity,
                     )
+                    session.add(item)
                     await channel.default_exchange.publish(
                         Message(
                             ormsgpack.packb({
@@ -137,15 +138,13 @@ async def serve(config: Path) -> None:
     if logconf := settings.get('logging'):
         logging.config.dictConfigClass(logconf).configure()
 
-    manager = Manager(settings['database']['url'])
-    manager.register(Request)
-    manager.register(Certificate)
+    engine = create_async_engine(settings['database']['url'])
+    async_session = async_sessionmaker(engine, expire_on_commit=True)
 
-    async with manager:
-        async with manager.connection():
-            await manager.create_tables()
+    async with engine.begin() as conn:
+        await conn.run_sync(reg.metadata.create_all)
 
-    service = await PKIService(manager).connect(
+    service = await PKIService(async_session).connect(
         settings['amqp']['url'],
         settings['amqp']
     )
