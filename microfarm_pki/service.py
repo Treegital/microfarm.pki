@@ -52,8 +52,6 @@ class PKIService(rpc.AttrHandler):
                         certificate = ormsgpack.unpackb(message.body)
                         async with self.session() as session:
                             async with session.begin():
-                                import pdb
-                                pdb.set_trace()
                                 data = certificate['data']
                                 item = Certificate(
                                     request_id=message.correlation_id,
