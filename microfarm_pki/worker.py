@@ -123,7 +123,8 @@ async def work(config: Path):
 
     pki: PKI = load_pki(settings['pki'])
     service = Minter(pki)
-    await service.handler(settings['amqp'])
+    await service.handler(
+        settings['amqp']['url'], settings['amqp']['queues'])
 
 
 @cli

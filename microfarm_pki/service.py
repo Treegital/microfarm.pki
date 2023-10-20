@@ -7,6 +7,7 @@ from pathlib import Path
 from minicli import cli, run
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from aio_pika import Message, connect, DeliveryMode
 from aio_pika.abc import (
     AbstractChannel, AbstractConnection, AbstractQueue,
@@ -142,10 +143,7 @@ async def serve(config: Path) -> None:
     async with engine.begin() as conn:
         await conn.run_sync(reg.metadata.create_all)
 
-    service = await PKIService(async_session).connect(
-        settings['amqp']['url'],
-        settings['amqp']
-    )
+    service = PKIService(async_session, settings['amqp']['url'], settings['amqp'])
     server = await rpc.serve_rpc(service, bind={settings['rpc']['bind']})
     print(f" [x] PKI Service ({settings['rpc']['bind']})")
     await service.persist()

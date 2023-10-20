@@ -1,13 +1,14 @@
 [amqp]
+
   url = "amqp://guest:guest@localhost/"
 
-  [amqp.requests]
+  [amqp.queues.requests]
       name = "pki.requests"
       durable = true
       exclusive = false
       auto_delete = false
 
-  [amqp.certificates]
+  [amqp.queues.certificates]
       name = "pki.certificates"
       durable = true
       exclusive = false
