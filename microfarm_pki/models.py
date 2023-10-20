@@ -1,16 +1,9 @@
-import uuid
-import asyncio
 import pydantic
 from typing import Optional
-from sqlalchemy import select
 from datetime import datetime
 from sqlalchemy import ForeignKey
-from sqlalchemy.orm import DeclarativeBase
-from sqlalchemy.orm import Mapped
-from sqlalchemy.orm import mapped_column
-from sqlalchemy.orm import MappedAsDataclass
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
-from sqlalchemy.orm import Mapped, mapped_column, registry, relationship, selectinload
+from sqlalchemy.orm import Mapped, mapped_column, registry, relationship
 from cryptography.x509 import ReasonFlags
 
 
@@ -40,8 +33,10 @@ class Certificate:
 
     creation_date: Mapped[datetime] = mapped_column(
         insert_default=creation_date, default=None)
-    revocation_date: Mapped[Optional[datetime]] = mapped_column(default=None)
-    revocation_reason: Mapped[Optional[ReasonFlags]] = mapped_column(default=None)
+    revocation_date: Mapped[Optional[datetime]] = mapped_column(
+        default=None)
+    revocation_reason: Mapped[Optional[ReasonFlags]] = mapped_column(
+        default=None)
 
 
 @reg.mapped_as_dataclass(dataclass_callable=pydantic.dataclasses.dataclass)
