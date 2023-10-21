@@ -38,6 +38,9 @@ class Certificate:
     revocation_reason: Mapped[Optional[ReasonFlags]] = mapped_column(
         default=None)
 
+    request: Mapped["Request"] = relationship(
+        default=None, back_populates="certificate", uselist=False)
+
 
 @reg.mapped_as_dataclass(dataclass_callable=pydantic.dataclasses.dataclass)
 class Request:
@@ -53,4 +56,4 @@ class Request:
         insert_default=creation_date, default=None)
 
     certificate: Mapped[Certificate] = relationship(
-        default=None, uselist=False)
+        default=None, uselist=False, back_populates="request")

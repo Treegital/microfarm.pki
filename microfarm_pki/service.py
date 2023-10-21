@@ -2,10 +2,12 @@ import asyncio
 import logging
 import uuid
 import ormsgpack
+import typing as t
 from aiozmq import rpc
 from pathlib import Path
 from minicli import cli, run
 from sqlalchemy import select
+from sqlalchemy.sql.functions import func
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from aio_pika import Message, connect, DeliveryMode
@@ -18,6 +20,11 @@ from .models import reg, Request, Certificate
 
 rpc_logger = logging.getLogger('microfarm_pki.rpc')
 amqp_logger = logging.getLogger('microfarm_pki.amqp')
+
+
+class Ordering(t.TypedDict):
+    key: str
+    order: t.Literal['asc'] | t.Literal['desc']
 
 
 class PKIService(rpc.AttrHandler):
@@ -60,20 +67,99 @@ class PKIService(rpc.AttrHandler):
                                 )
                                 session.add(item)
 
-                        self.results[message.correlation_id].set_result(
-                            data['serial_number']
-                        )
+                        if message.correlation_id in self.results:
+                            self.results[message.correlation_id].set_result(
+                                data['serial_number']
+                            )
                     except Exception as err:
-                        print(err)
-                        self.results[message.correlation_id].set_result(False)
+                        if message.correlation_id in self.results:
+                            self.results[message.correlation_id].set_result(False)
                         await message.reject(requeue=False)
 
     @rpc.method
-    async def get_certificate(self, request_id: str):
+    async def account_certificates(
+            self,
+            account: str,
+            offset: int = 0,
+            limit: int = 0,
+            sort_by: t.List[Ordering] = []):
+
+        query = select(
+            Certificate.account,
+            Certificate.serial_number,
+            Certificate.fingerprint,
+            Certificate.valid_from,
+            Certificate.valid_until,
+            Certificate.creation_date,
+            Certificate.revocation_date,
+            Certificate.revocation_reason
+        )\
+        .where(Certificate.account == account)
+
+        if sort_by:
+            for sorting in sort_by:
+                sort_field = getattr(Certificate, sorting['key'])
+                if sorting['order'] == 'asc':
+                    query = query.order_by(sort_field.asc())
+                elif sorting['order'] == 'desc':
+                    query = query.order_by(sort_field.desc())
+                else:
+                    raise NameError(direction)
+
+        if offset:
+            query = query.offset(offset)
+
+        if limit:
+            query = query.limit(limit)
+
+        async with self.session() as session:
+            result = await session.execute(query)
+            certs = [dict(row) for row in result.mappings().all()]
+            result = await session.execute(func.count(Certificate.serial_number))
+            total = result.scalar()
+
+        return {
+            "code": 200,
+            "data": {
+                "total": total,
+                "offset": offset or None,
+                "page_size": limit or None,
+                "items": certs
+            }
+        }
+
+    @rpc.method
+    async def get_certificate(self, account: str, serial_number: str):
+        async with self.session() as session:
+            result = await session.execute(
+                select(
+                    Certificate.account,
+                    Certificate.serial_number,
+                    Certificate.fingerprint,
+                    Certificate.valid_from,
+                    Certificate.valid_until,
+                    Certificate.creation_date,
+                    Certificate.revocation_date,
+                    Certificate.revocation_reason,
+                    Request.identity
+                )
+                .join_from(Certificate, Request)
+                .where(Certificate.serial_number == serial_number)
+            )
+            cert = result.mappings().one()
+        return {
+            "code": 200,
+            "data": {
+                "item": dict(cert)
+            }
+        }
+
+    @rpc.method
+    async def get_certificate_request(self, account: str, request_id: str):
         async with self.session() as session:
             result = await session.execute(
                 select(Request)
-                .where(Request.id == request_id)
+                .where(Request.id == request_id, Request.requester == account)
                 .options(selectinload(Request.certificate))
             )
             req = result.scalars().one()
@@ -122,7 +208,13 @@ class PKIService(rpc.AttrHandler):
                         routing_key=request_queue.name,
                     )
         self.results[correlation_id] = self.loop.create_future()
-        return {'request': correlation_id}
+        return {
+            'code': 201,
+            'message': 'Certificate request is being processed',
+            'data': {
+                'request': correlation_id
+            }
+        }
 
 
 @cli
