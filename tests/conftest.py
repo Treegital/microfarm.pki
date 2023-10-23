@@ -3,10 +3,11 @@ import pytest
 import pytest_asyncio
 import testing.rabbitmq
 from aiozmq import rpc
-from peewee_aio import Manager
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 from branding_iron import keys, certificate
 from microfarm_pki.bundle import PKI
-from microfarm_pki.models import Request, Certificate
+from microfarm_pki.models import reg, Request, Certificate
 from microfarm_pki.service import PKIService
 from microfarm_pki.worker import Minter
 
@@ -89,17 +90,14 @@ def event_loop():
 @pytest_asyncio.fixture(scope="function")
 async def db_manager(tmpdir_factory):
     path = tmpdir_factory.mktemp("databases").join("test.db")
-    db = f"aiosqlite:///{path}"
-    manager = Manager(db)
-    manager.register(Request)
-    manager.register(Certificate)
+    engine = create_async_engine(f'sqlite+aiosqlite:///{path}')
+    async_session = async_sessionmaker(engine, expire_on_commit=True)
 
-    async with manager:
-        async with manager.connection():
-            await Request.create_table()
-            await Certificate.create_table()
+    async with engine.begin() as conn:
+        await conn.run_sync(reg.metadata.create_all)
 
-    return manager
+    return async_session
+
 
 
 @pytest_asyncio.fixture(scope="function")

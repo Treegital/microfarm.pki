@@ -1,8 +1,13 @@
-import peewee
-from peewee_aio import AIOModel
+import pydantic
+from typing import Optional
 from datetime import datetime
+from sqlalchemy import ForeignKey
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from sqlalchemy.orm import Mapped, mapped_column, registry, relationship
 from cryptography.x509 import ReasonFlags
-from peewee import IntegrityError
+
+
+reg = registry()
 
 
 def creation_date():
@@ -10,48 +15,45 @@ def creation_date():
     return datetime.utcnow()
 
 
-class EnumField(peewee.CharField):
+@reg.mapped_as_dataclass(dataclass_callable=pydantic.dataclasses.dataclass)
+class Certificate:
+    __tablename__ = "certificates"
 
-    def __init__(self, choices, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.choices = choices
+    account: Mapped[str]
+    serial_number: Mapped[str] = mapped_column(primary_key=True)
+    fingerprint: Mapped[str]
+    pem_cert: Mapped[bytes]
+    pem_chain: Mapped[bytes]
+    pem_private_key: Mapped[bytes]
+    valid_from: Mapped[datetime]
+    valid_until: Mapped[datetime]
+    request_id: Mapped[str] = mapped_column(
+        ForeignKey("requests.id")
+    )
 
-    def db_value(self, value):
-        if value is None:
-            return None
-        return value.value
+    creation_date: Mapped[datetime] = mapped_column(
+        insert_default=creation_date, default=None)
+    revocation_date: Mapped[Optional[datetime]] = mapped_column(
+        default=None)
+    revocation_reason: Mapped[Optional[ReasonFlags]] = mapped_column(
+        default=None)
 
-    def python_value(self, value):
-        if value is None and self.null:
-            return value
-        return self.choices(value)
-
-
-class Request(AIOModel):
-
-    class Meta:
-        table_name = 'requests'
-
-    id = peewee.UUIDField(primary_key=True)
-    requester = peewee.CharField()
-    identity = peewee.CharField()
-    creation_date = peewee.DateTimeField(default=creation_date)
+    request: Mapped["Request"] = relationship(
+        default=None, back_populates="certificate", uselist=False)
 
 
-class Certificate(AIOModel):
+@reg.mapped_as_dataclass(dataclass_callable=pydantic.dataclasses.dataclass)
+class Request:
 
-    class Meta:
-        table_name = 'certificates'
+    __tablename__ = "requests"
 
-    serial_number = peewee.CharField(primary_key=True)
-    fingerprint = peewee.CharField(unique=True)
-    pem_cert = peewee.BlobField()
-    pem_chain = peewee.BlobField()
-    pem_private_key = peewee.BlobField()
-    valid_from = peewee.DateTimeField()
-    valid_until = peewee.DateTimeField()
-    creation_date = peewee.DateTimeField(default=creation_date)
-    revocation_date = peewee.DateTimeField(null=True)
-    revocation_reason = EnumField(ReasonFlags, null=True)
-    request_id = peewee.ForeignKeyField(
-        Request, backref='certificate', unique=True)
+    requester: Mapped[str]
+    identity: Mapped[str]
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+
+    creation_date: Mapped[datetime] = mapped_column(
+        insert_default=creation_date, default=None)
+
+    certificate: Mapped[Certificate] = relationship(
+        default=None, uselist=False, back_populates="request")
