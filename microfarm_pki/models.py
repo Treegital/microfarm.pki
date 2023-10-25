@@ -32,10 +32,10 @@ class Request(AIOModel):
     class Meta:
         table_name = 'requests'
 
-    id = peewee.UUIDField(primary_key=True)
+    id = peewee.FixedCharField(max_length=32, primary_key=True)
     requester = peewee.CharField()
     identity = peewee.CharField()
-    creation_date = peewee.DateTimeField(default=creation_date)
+    submission_date = peewee.DateTimeField(default=creation_date)
 
 
 class Certificate(AIOModel):
@@ -51,7 +51,7 @@ class Certificate(AIOModel):
     pem_private_key = peewee.BlobField()
     valid_from = peewee.DateTimeField()
     valid_until = peewee.DateTimeField()
-    creation_date = peewee.DateTimeField(default=creation_date)
+    generation_date = peewee.DateTimeField(default=creation_date)
     revocation_date = peewee.DateTimeField(null=True)
     revocation_reason = EnumField(ReasonFlags, null=True)
     request_id = peewee.ForeignKeyField(

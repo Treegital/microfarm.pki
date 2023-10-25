@@ -3,17 +3,19 @@ import logging
 import uuid
 import ormsgpack
 import typing as t
+from datetime import datetime
 from aiozmq import rpc
 from pathlib import Path
 from minicli import cli, run
 from peewee_aio import Manager
-from peewee import IntegrityError, fn
+from peewee import IntegrityError, JOIN
 from aio_pika import Message, connect, DeliveryMode
 from aio_pika.abc import (
     AbstractChannel, AbstractConnection, AbstractQueue,
     AbstractIncomingMessage
 )
 from .models import Request, Certificate
+from microfarm_rpc import RPCResponse, PaginatedSet, CertificateInfo, CertificateRequest
 
 
 rpc_logger = logging.getLogger('microfarm_pki.rpc')
@@ -62,6 +64,16 @@ class PKIService(rpc.AttrHandler):
                         async with self.manager:
                             async with self.manager.connection():
                                 data = certificate['data']
+                                # SQLite doesn't have a Datetime Format
+                                # We need to make sure it's understood
+                                data['valid_from'] = datetime.strptime(
+                                    data['valid_from'],
+                                    '%Y-%m-%dT%H:%M:%S'
+                                )
+                                data['valid_until'] = datetime.strptime(
+                                    data['valid_until'],
+                                    '%Y-%m-%dT%H:%M:%S'
+                                )
                                 await Certificate.create(
                                     request_id=message.correlation_id,
                                     **data
@@ -77,7 +89,7 @@ class PKIService(rpc.AttrHandler):
                         await message.reject(requeue=False)
 
     @rpc.method
-    async def account_certificates(
+    async def list_certificates(
             self,
             account: str,
             offset: int = 0,
@@ -91,7 +103,7 @@ class PKIService(rpc.AttrHandler):
                 Certificate.fingerprint,
                 Certificate.valid_from,
                 Certificate.valid_until,
-                Certificate.creation_date,
+                Certificate.generation_date,
                 Certificate.revocation_date,
                 Certificate.revocation_reason,
                 Request.identity
@@ -121,66 +133,149 @@ class PKIService(rpc.AttrHandler):
                 results = await query.dicts()
                 total = int(await query.count())
 
-        return {
-            "code": 200,
-            "data": {
+        data = PaginatedSet[CertificateInfo](
+            metadata={
                 "total": total,
                 "offset": offset or None,
-                "page_size": limit or None,
-                "items": results
-            }
-        }
+                "page_size": limit or None
+            },
+            items=results
+        )
+        response = RPCResponse[PaginatedSet[CertificateInfo]](
+            code=200,
+            type=data.__class__.__name__,
+            body=data
+        )
+        return response.model_dump()
 
     @rpc.method
     async def get_certificate(self, account: str, serial_number: str):
+        query = (
+            Certificate.select(
+                Certificate.account,
+                Certificate.serial_number,
+                Certificate.fingerprint,
+                Certificate.valid_from,
+                Certificate.valid_until,
+                Certificate.generation_date,
+                Certificate.revocation_date,
+                Certificate.revocation_reason,
+                Request.identity,
+            )
+            .join(Request)
+            .where(Certificate.serial_number == serial_number,
+                   Certificate.account == account)
+            .dicts()
+            .get()
+        )
+
         async with self.manager:
             async with self.manager.connection():
-                cert = await (
-                    Certificate.select(
-                        Certificate.account,
-                        Certificate.serial_number,
-                        Certificate.fingerprint,
-                        Certificate.valid_from,
-                        Certificate.valid_until,
-                        Certificate.creation_date,
-                        Certificate.revocation_date,
-                        Certificate.revocation_reason,
-                        Request.identity,
+                try:
+                    cert = await query
+                    data = CertificateInfo(**cert)
+                    response = RPCResponse[CertificateInfo](
+                        code=200,
+                        type=data.__class__.__name__,
+                        body=data
                     )
-                    .join(Request)
-                    .where(Certificate.serial_number == serial_number,
-                           Certificate.account == account)
-                    .dicts()
-                    .get()
-                )
-        return {
-            "code": 200,
-            "data": {
-                "item": cert
-            }
-        }
+                except Certificate.DoesNotExist:
+                    response = RPCResponse[str](
+                        code=404,
+                        type="Error",
+                        description="Certificate does not exist."
+                    )
+        return response.model_dump()
+
 
     @rpc.method
-    async def get_certificate_request(self, account: str, request_id: str):
+    async def list_requests(
+            self,
+            account: str,
+            offset: int = 0,
+            limit: int = 0,
+            sort_by: t.List[Ordering] = []):
+        query = (
+            Request.select(
+                Request.id,
+                Request.identity,
+                Request.requester,
+                Request.submission_date,
+                Certificate.serial_number,
+                Certificate.generation_date
+            )
+            .join(Certificate, JOIN.LEFT_OUTER)
+            .where(Request.requester == account)
+        )
+        if sort_by:
+            for sorting in sort_by:
+                sort_field = getattr(Request, sorting['key'])
+                if sorting['order'] == 'asc':
+                    query = query.order_by(sort_field.asc())
+                elif sorting['order'] == 'desc':
+                    query = query.order_by(sort_field.desc())
+                else:
+                    raise NameError(direction)
+
+        if offset:
+            query = query.offset(offset)
+
+        if limit:
+            query = query.limit(limit)
+
         async with self.manager:
             async with self.manager.connection():
-                req = await (
-                    Request.select(
-                        Request.id,
-                        Request.identity,
-                        Certificate.serial_number,
-                        Certificate.fingerprint,
-                        Certificate.creation_date
+                results = await query.dicts()
+                total = int(await query.count())
+
+        data = PaginatedSet[CertificateRequest](
+            metadata={
+                "total": total,
+                "offset": offset or None,
+                "page_size": limit or None
+            },
+            items=results
+        )
+        response = RPCResponse[PaginatedSet[CertificateRequest]](
+            code=200,
+            type=data.__class__.__name__,
+            body=data
+        )
+        return response.model_dump()
+
+    @rpc.method
+    async def get_request(
+            self, account: str, request_id: str):
+        query = (
+            Request.select(
+                Request.id,
+                Request.identity,
+                Request.requester,
+                Request.submission_date,
+                Certificate.serial_number,
+                Certificate.fingerprint,
+                Certificate.generation_date
+            )
+            .join(Certificate, JOIN.LEFT_OUTER)
+            .where(Request.requester == account,
+                   Request.requester == account)
+        )
+        async with self.manager:
+            async with self.manager.connection():
+                try:
+                    req = await query.dicts().get()
+                    response = RPCResponse[CertificateRequest](
+                        code=200,
+                        type="CertificateRequest",
+                        body=req
                     )
-                    .join(Request)
-                    .where(Request.id == request_id,
-                           Request.requester == account)
-                    .dicts()
-                    .get()
-                )
-        return {
-            "data": req
-        }
+                except Request.DoesNotExist:
+                    response = RPCResponse[str](
+                        code=404,
+                        type="Error",
+                        description="Certificate request does not exist."
+                    )
+        return response.model_dump()
 
     @rpc.method
     async def generate_certificate(self, user: str, identity: str) -> dict:
@@ -216,13 +311,13 @@ class PKIService(rpc.AttrHandler):
                         routing_key=request_queue.name,
                     )
         self.results[correlation_id] = self.loop.create_future()
-        return {
-            'code': 201,
-            'message': 'Certificate request is being processed',
-            'data': {
-                'request': correlation_id
-            }
-        }
+        response = RPCResponse[str](
+            code=201,
+            type="Token",
+            description="Request identifier",
+            body=correlation_id
+        )
+        return response.model_dump()
 
 
 @cli

@@ -91,8 +91,8 @@ class Minter:
             async with request_queue.iterator() as qiterator:
                 message: AbstractIncomingMessage
                 async for message in qiterator:
-                    try:
-                        async with message.process(requeue=True):
+                    async with message.process(requeue=True):
+                        try:
                             assert message.reply_to is not None
                             data = ormsgpack.unpackb(message.body)
                             result = self.mint(data)
@@ -104,9 +104,12 @@ class Minter:
                                 ),
                                 routing_key=message.reply_to,
                             )
-                    except Exception:
-                        logging.exception(
-                            f"Processing error for {message!r}")
+                        except Exception as err:
+                            import pdb
+                            pdb.set_trace()
+                            logging.exception(
+                                f"Processing error for {message!r}")
+                            raise
 
 
 @cli
