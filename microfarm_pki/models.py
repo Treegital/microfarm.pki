@@ -1,4 +1,6 @@
 import peewee
+import typing as t
+from enum import Enum
 from peewee_aio import AIOModel
 from datetime import datetime
 from cryptography.x509 import ReasonFlags
@@ -11,20 +13,24 @@ def creation_date():
 
 
 class EnumField(peewee.CharField):
+    """
+    This class enable an Enum like field for Peewee
+    """
 
-    def __init__(self, choices, *args, **kwargs):
+    def __init__(
+            self, enum: type[Enum], *args: t.Any, **kwargs: t.Any) -> None:
         super().__init__(*args, **kwargs)
-        self.choices = choices
+        self.enum = enum
 
-    def db_value(self, value):
+    def db_value(self, value: t.Any) -> t.Any:
         if value is None:
             return None
         return value.value
 
-    def python_value(self, value):
+    def python_value(self, value: t.Any) -> t.Any:
         if value is None and self.null:
             return value
-        return self.choices(value)
+        return self.enum(value)
 
 
 class Request(AIOModel):

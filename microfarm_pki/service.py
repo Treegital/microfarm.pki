@@ -3,19 +3,21 @@ import logging
 import uuid
 import ormsgpack
 import typing as t
-from datetime import datetime
+from datetime import datetime, timezone
 from aiozmq import rpc
 from pathlib import Path
 from minicli import cli, run
 from peewee_aio import Manager
-from peewee import IntegrityError, JOIN
+from peewee import IntegrityError, JOIN, SQL, Case, Value
 from aio_pika import Message, connect, DeliveryMode
 from aio_pika.abc import (
     AbstractChannel, AbstractConnection, AbstractQueue,
     AbstractIncomingMessage
 )
-from .models import Request, Certificate
-from microfarm_rpc import RPCResponse, PaginatedSet, CertificateInfo, CertificateRequest
+from .models import Request, Certificate, ReasonFlags
+from . import request
+from . import certificate
+from . import pagination
 
 
 rpc_logger = logging.getLogger('microfarm_pki.rpc')
@@ -96,97 +98,55 @@ class PKIService(rpc.AttrHandler):
             limit: int = 0,
             sort_by: t.List[Ordering] = []):
 
-        query = (
-            Certificate.select(
-                Certificate.account,
-                Certificate.serial_number,
-                Certificate.fingerprint,
-                Certificate.valid_from,
-                Certificate.valid_until,
-                Certificate.generation_date,
-                Certificate.revocation_date,
-                Certificate.revocation_reason,
-                Request.identity
-            )
-            .join(Request)
-            .group_by(Certificate)
-            .where(Certificate.account == account)
+        query = certificate.account_certificates(account)
+        paginated = pagination.paginate(
+            pagination.sort(
+                query,
+                pagination.resolve_order_by(Certificate, tuple(sort_by))
+            ),
+            offset=offset,
+            limit=limit
         )
-        if sort_by:
-            for sorting in sort_by:
-                sort_field = getattr(Certificate, sorting['key'])
-                if sorting['order'] == 'asc':
-                    query = query.order_by(sort_field.asc())
-                elif sorting['order'] == 'desc':
-                    query = query.order_by(sort_field.desc())
-                else:
-                    raise NameError(direction)
-
-        if offset:
-            query = query.offset(offset)
-
-        if limit:
-            query = query.limit(limit)
 
         async with self.manager:
             async with self.manager.connection():
-                results = await query.dicts()
+                results = await paginated.dicts()
                 total = int(await query.count())
 
-        data = PaginatedSet[CertificateInfo](
-            metadata={
-                "total": total,
-                "offset": offset or None,
-                "page_size": limit or None
-            },
-            items=results
-        )
-        response = RPCResponse[PaginatedSet[CertificateInfo]](
-            code=200,
-            type=data.__class__.__name__,
-            body=data
-        )
-        return response.model_dump()
+        return {
+            "code": 200,
+            "type": "PaginatedSet[CertificateInfo]",
+            "description": None,
+            "body": {
+                "metadata": {
+                    "total": total,
+                    "offset": offset or None,
+                    "page_size": limit or None
+                },
+                "items": results
+            }
+        }
 
     @rpc.method
     async def get_certificate(self, account: str, serial_number: str):
-        query = (
-            Certificate.select(
-                Certificate.account,
-                Certificate.serial_number,
-                Certificate.fingerprint,
-                Certificate.valid_from,
-                Certificate.valid_until,
-                Certificate.generation_date,
-                Certificate.revocation_date,
-                Certificate.revocation_reason,
-                Request.identity,
-            )
-            .join(Request)
-            .where(Certificate.serial_number == serial_number,
-                   Certificate.account == account)
-            .dicts()
-            .get()
-        )
-
+        query = certificate.account_certificate(account, serial_number)
         async with self.manager:
             async with self.manager.connection():
                 try:
-                    cert = await query
-                    data = CertificateInfo(**cert)
-                    response = RPCResponse[CertificateInfo](
-                        code=200,
-                        type=data.__class__.__name__,
-                        body=data
-                    )
+                    cert = await query.dicts().get()
+                    return {
+                        "code": 200,
+                        "type": "CertificateInfo",
+                        "description": "Account certificate info",
+                        "body": cert
+                    }
                 except Certificate.DoesNotExist:
-                    response = RPCResponse[str](
-                        code=404,
-                        type="Error",
-                        description="Certificate does not exist."
-                    )
-        return response.model_dump()
-
+                    return {
+                        "code": 404,
+                        "type": "Error",
+                        "description": "Certificate does not exist.",
+                        "body": None
+                    }
 
     @rpc.method
     async def list_requests(
@@ -195,87 +155,56 @@ class PKIService(rpc.AttrHandler):
             offset: int = 0,
             limit: int = 0,
             sort_by: t.List[Ordering] = []):
-        query = (
-            Request.select(
-                Request.id,
-                Request.identity,
-                Request.requester,
-                Request.submission_date,
-                Certificate.serial_number,
-                Certificate.generation_date
-            )
-            .join(Certificate, JOIN.LEFT_OUTER)
-            .where(Request.requester == account)
+
+        query = request.account_requests(account)
+        paginated = pagination.paginate(
+            pagination.sort(
+                query,
+                pagination.resolve_order_by(Request, tuple(sort_by))
+            ),
+            offset=offset,
+            limit=limit
         )
-        if sort_by:
-            for sorting in sort_by:
-                sort_field = getattr(Request, sorting['key'])
-                if sorting['order'] == 'asc':
-                    query = query.order_by(sort_field.asc())
-                elif sorting['order'] == 'desc':
-                    query = query.order_by(sort_field.desc())
-                else:
-                    raise NameError(direction)
-
-        if offset:
-            query = query.offset(offset)
-
-        if limit:
-            query = query.limit(limit)
-
         async with self.manager:
             async with self.manager.connection():
-                results = await query.dicts()
+                results = await paginated.dicts()
                 total = int(await query.count())
 
-        data = PaginatedSet[CertificateRequest](
-            metadata={
-                "total": total,
-                "offset": offset or None,
-                "page_size": limit or None
-            },
-            items=results
-        )
-        response = RPCResponse[PaginatedSet[CertificateRequest]](
-            code=200,
-            type=data.__class__.__name__,
-            body=data
-        )
-        return response.model_dump()
+        return {
+            "code": 200,
+            "type": "PaginatedSet[CertificateRequest]",
+            "description": None,
+            "body": {
+                "metadata": {
+                    "total": total,
+                    "offset": offset or None,
+                    "page_size": limit or None
+                },
+                "items": results
+            }
+        }
 
     @rpc.method
-    async def get_request(
-            self, account: str, request_id: str):
-        query = (
-            Request.select(
-                Request.id,
-                Request.identity,
-                Request.requester,
-                Request.submission_date,
-                Certificate.serial_number,
-                Certificate.fingerprint,
-                Certificate.generation_date
-            )
-            .join(Certificate, JOIN.LEFT_OUTER)
-            .where(Request.requester == account,
-                   Request.requester == account)
-        )
+    async def get_request(self, account: str, request_id: str):
+        query = request.account_request(account, request_id)
         async with self.manager:
             async with self.manager.connection():
                 try:
                     req = await query.dicts().get()
-                    response = RPCResponse[CertificateRequest](
-                        code=200,
-                        type="CertificateRequest",
-                        body=req
-                    )
+                    return {
+                        "code": 200,
+                        "type": "CertificateRequest",
+                        "description": "Certificate request overview.",
+                        "body": req
+                    }
                 except Request.DoesNotExist:
-                    response = RPCResponse[str](
-                        code=404,
-                        type="Error",
-                        description="Certificate request does not exist."
-                    )
-        return response.model_dump()
+                    return {
+                        "code": 404,
+                        "type": "Error",
+                        "description": "Request does not exist.",
+                        "body": None
+                    }
+
 
     @rpc.method
     async def generate_certificate(self, user: str, identity: str) -> dict:
@@ -299,6 +228,7 @@ class PKIService(rpc.AttrHandler):
                     )
                     await channel.default_exchange.publish(
                         Message(
+
                             ormsgpack.packb({
                                 "user": user,
                                 "identity": identity
@@ -311,13 +241,45 @@ class PKIService(rpc.AttrHandler):
                         routing_key=request_queue.name,
                     )
         self.results[correlation_id] = self.loop.create_future()
-        response = RPCResponse[str](
-            code=201,
-            type="Token",
-            description="Request identifier",
-            body=correlation_id
-        )
-        return response.model_dump()
+        return {
+            "code": 201,
+            "type": "Token",
+            "description": "Request identifier",
+            "body": correlation_id
+        }
+
+    @rpc.method
+    async def revoke_certificate(
+            self, account: str, serial_number: str, reason: str) -> dict:
+
+        async with self.manager:
+            async with self.manager.connection():
+                try:
+                    req = await (
+                        Certificate
+                        .update({
+                            Certificate.revocation_date: SQL('CURRENT_TIMESTAMP'),
+                            Certificate.revocation_reason: ReasonFlags[reason]
+                        })
+                        .where(
+                            Certificate.account == account,
+                            Certificate.serial_number == serial_number,
+                            Certificate.revocation_date.is_null()
+                        )
+                    )
+                    return {
+                        "code": 200,
+                        "type": "Notification",
+                        "description": "Certificate was revoked.",
+                        "body": None
+                    }
+                except Certificate.DoesNotExist:
+                    return {
+                        "code": 404,
+                        "type": "Error",
+                        "description": "Certificate could not be revoked.",
+                        "body": None
+                    }
 
 
 @cli

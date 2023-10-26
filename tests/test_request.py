@@ -94,6 +94,7 @@ async def test_request_certificate(
             "serial_number": hamcrest.instance_of(str)
         })
     }))
+    serial_number = response['body']['serial_number']
 
     response = await pki_rpcclient.list_requests("test")
     hamcrest.assert_that(response, hamcrest.has_entries({
@@ -133,6 +134,7 @@ async def test_request_certificate(
             "items": hamcrest.contains_exactly(
                 hamcrest.has_entries({
                     "account": "test",
+                    "status": "active",
                     "serial_number": hamcrest.instance_of(str),
                     "fingerprint": hamcrest.instance_of(str),
                     "valid_from": hamcrest.instance_of(datetime),
@@ -143,5 +145,51 @@ async def test_request_certificate(
                     "identity": "2.5.4.15=pytest,CN=Tester"
                 })
             )
+        })
+    }))
+
+    response = await pki_rpcclient.get_certificate("test", serial_number)
+    hamcrest.assert_that(response, hamcrest.has_entries({
+        "code": 200,
+        "type": "CertificateInfo",
+        "description": "Account certificate info",
+        "body": hamcrest.has_entries({
+            "account": "test",
+            "status": "active",
+            "serial_number": serial_number,
+            "fingerprint": hamcrest.instance_of(str),
+            "valid_from": hamcrest.instance_of(datetime),
+            "valid_until": hamcrest.instance_of(datetime),
+            "generation_date": hamcrest.instance_of(datetime),
+            "revocation_date": None,
+            "revocation_reason": None,
+            "identity": "2.5.4.15=pytest,CN=Tester"
+        })
+    }))
+
+    response = await pki_rpcclient.revoke_certificate(
+        "test", serial_number, "superseded")
+    hamcrest.assert_that(response, hamcrest.has_entries({
+        "code": 200,
+        "type": "Notification",
+        "description": "Certificate was revoked.",
+        "body": None
+    }))
+
+    response = await pki_rpcclient.get_certificate("test", serial_number)
+    hamcrest.assert_that(response, hamcrest.has_entries({
+        "code": 200,
+        "type": "CertificateInfo",
+        "body": hamcrest.has_entries({
+            "account": "test",
+            "status": "revoked",
+            "serial_number": serial_number,
+            "fingerprint": hamcrest.instance_of(str),
+            "valid_from": hamcrest.instance_of(datetime),
+            "valid_until": hamcrest.instance_of(datetime),
+            "generation_date": hamcrest.instance_of(datetime),
+            "revocation_date": hamcrest.instance_of(datetime),
+            "revocation_reason": "superseded",
+            "identity": "2.5.4.15=pytest,CN=Tester"
         })
     }))
