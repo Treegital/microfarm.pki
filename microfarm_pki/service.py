@@ -7,7 +7,6 @@ from aiozmq import rpc
 from pathlib import Path
 from datetime import datetime
 from minicli import cli, run
-from peewee import SQL
 from peewee_aio import Manager
 from cryptography import x509
 from aio_pika.patterns import RPC
@@ -16,7 +15,7 @@ from aio_pika.abc import (
     AbstractChannel, AbstractConnection, AbstractQueue,
     AbstractIncomingMessage
 )
-from .models import Request, Certificate, ReasonFlags
+from .models import Request, Certificate
 from . import request
 from . import certificate
 from . import pagination
@@ -63,7 +62,7 @@ class PKIService(rpc.AttrHandler):
         async with connection:
             channel: AbstractChannel = await connection.channel()
             await channel.set_qos(prefetch_count=1)
-            certificate_queue = await channel.declare_queue(
+            certificate_queue: AbstractQueue = await channel.declare_queue(
                 **self.queues['certificates']
             )
             amqp_logger.info(

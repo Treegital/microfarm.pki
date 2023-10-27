@@ -9,6 +9,17 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.x509 import ocsp, load_pem_x509_certificates, ReasonFlags
 
 
+async def tear_down(event_loop):
+    tasks = asyncio.all_tasks(event_loop)
+    tasks = [t for t in tasks if not t.done()]
+    for task in tasks:
+        task.cancel()
+    try:
+        await asyncio.wait(tasks)
+    except asyncio.exceptions.CancelledError:
+        pass
+
+
 @pytest.mark.asyncio
 async def test_request_certificate(
         service, pki_rpcservice, pki_rpcclient, minter, event_loop):
@@ -220,3 +231,5 @@ async def test_request_certificate(
     assert decoded.certificate_status == ocsp.OCSPCertStatus.REVOKED
     assert decoded.revocation_time is not None
     assert decoded.revocation_reason == ReasonFlags.superseded
+
+    await tear_down(event_loop)
