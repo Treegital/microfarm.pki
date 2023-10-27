@@ -1,14 +1,32 @@
+import asyncio
 import logging
 import ormsgpack
 import typing as t
+from datetime import datetime, timezone
 from pathlib import Path
 from minicli import cli, run
-from aio_pika import Message, connect
+from aio_pika import Message, connect, connect_robust
+from aio_pika.patterns import RPC
 from aio_pika.abc import AbstractIncomingMessage
 from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
 from branding_iron import keys, certificate
 from .bundle import PKI
 from .pki import create_pki
+
+
+rpc_logger = logging.getLogger('microfarm_pki.rpc')
+amqp_logger = logging.getLogger('microfarm_pki.amqp')
+
+
+class MsgpackRPC(RPC):
+    CONTENT_TYPE = "application/msgpack"
+
+    def serialize(self, data: t.Any) -> bytes:
+        return ormsgpack.packb(data)
+
+    def deserialize(self, data: bytes) -> bytes:
+        return ormsgpack.unpackb(data)
 
 
 def generate_password(length: int) -> str:
@@ -49,7 +67,7 @@ def load_pki(settings):
     return PKI(intermediate_cert, intermediate_key, [root_cert])
 
 
-class Minter:
+class PKIWorker:
 
     def __init__(self, pki: PKI):
         self.pki = pki
@@ -72,7 +90,56 @@ class Minter:
             }
         }
 
-    async def handler(self, url, queues: dict) -> None:
+    async def check_status(self, *,
+                           pem_cert: bytes,
+                           pem_chain: bytes,
+                           revocation_date: str,
+                           revocation_reason: str) -> bytes:
+        if revocation_date:
+            status = x509.ocsp.OCSPCertStatus.REVOKED
+            revocation_date = datetime.fromisoformat(revocation_date)
+        else:
+            status = x509.ocsp.OCSPCertStatus.GOOD
+
+        cert = x509.load_pem_x509_certificate(pem_cert)
+        chain = x509.load_pem_x509_certificates(pem_chain)
+        builder = x509.ocsp.OCSPResponseBuilder()
+        builder = builder.add_response(
+            cert=cert,
+            issuer=chain[0],
+            algorithm=hashes.SHA256(),
+            cert_status=status,
+            this_update=datetime.now(timezone.utc),
+            next_update=datetime.now(timezone.utc),
+            revocation_time=revocation_date,
+            revocation_reason=x509.ReasonFlags[revocation_reason]
+        ).responder_id(
+            x509.ocsp.OCSPResponderEncoding.HASH,
+            self.pki.certificate
+        )
+        # 'Algorithm must be None when signing via ed25519 or ed448
+        # We need to make sure it's either...
+        res = builder.sign(self.pki.private_key, None)
+        der = res.public_bytes(serialization.Encoding.DER)
+        return der
+
+    async def rpc_responder(self, url: str):
+        connection = await connect_robust(
+            url,
+            client_properties={"connection_name": "PKI RPC"},
+        )
+        channel = await connection.channel()
+        rpc = await MsgpackRPC.create(channel)
+        await rpc.register(
+            "check_status", self.check_status, auto_delete=True)
+
+        rpc_logger.info("Started PKI RPC channel")
+        try:
+            await asyncio.Future()
+        finally:
+            await connection.close()
+
+    async def minter(self, url: str, queues: dict) -> None:
         # Perform connection
         connection = await connect(url)
 
@@ -85,31 +152,24 @@ class Minter:
             request_queue = await channel.declare_queue(
                 **queues['requests']
             )
-            print(" [x] Awaiting Certificate requests")
 
-            # Start listening the queue with name 'hello'
+            amqp_logger.info("Awaiting Certificate requests")
+
             async with request_queue.iterator() as qiterator:
                 message: AbstractIncomingMessage
                 async for message in qiterator:
                     async with message.process(requeue=True):
-                        try:
-                            assert message.reply_to is not None
-                            data = ormsgpack.unpackb(message.body)
-                            result = self.mint(data)
-                            response = ormsgpack.packb(result)
-                            await exchange.publish(
-                                Message(
-                                    body=response,
-                                    correlation_id=message.correlation_id,
-                                ),
-                                routing_key=message.reply_to,
-                            )
-                        except Exception as err:
-                            import pdb
-                            pdb.set_trace()
-                            logging.exception(
-                                f"Processing error for {message!r}")
-                            raise
+                        assert message.reply_to is not None
+                        data = ormsgpack.unpackb(message.body)
+                        result = self.mint(data)
+                        response = ormsgpack.packb(result)
+                        await exchange.publish(
+                            Message(
+                                body=response,
+                                correlation_id=message.correlation_id,
+                            ),
+                            routing_key=message.reply_to,
+                        )
 
 
 @cli
@@ -125,9 +185,12 @@ async def work(config: Path):
         logging.config.dictConfigClass(logconf).configure()
 
     pki: PKI = load_pki(settings['pki'])
-    service = Minter(pki)
-    await service.handler(
-        settings['amqp']['url'], settings['amqp']['queues'])
+    service = PKIWorker(pki)
+    await asyncio.gather(
+        service.minter(
+            settings['amqp']['url'], settings['amqp']['queues']),
+        service.rpc_responder(settings['amqp']['url'])
+    )
 
 
 @cli

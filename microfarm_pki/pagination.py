@@ -21,7 +21,7 @@ def resolve_order_by(model, ordering: Sorting) -> t.Iterator[Ordering]:
         elif column_order['order'] == 'desc':
             yield sort_field.desc()
         else:
-            raise NameError(direction)
+            raise NameError(column_order['order'])
 
 
 def sort(query, order_by: t.Iterable[Ordering]):

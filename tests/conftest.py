@@ -9,7 +9,7 @@ from branding_iron import keys, certificate
 from microfarm_pki.bundle import PKI
 from microfarm_pki.models import Request, Certificate
 from microfarm_pki.service import PKIService
-from microfarm_pki.worker import Minter
+from microfarm_pki.worker import PKIWorker
 
 
 root_cert = certificate.pem_decrypt_x509(
@@ -67,10 +67,7 @@ QUEUES = {
 @pytest.fixture(scope="function")
 def rabbitmq():
     with testing.rabbitmq.RabbitMQServer() as rmq:
-        try:
-            yield rmq
-        except:
-            pass
+        yield rmq
 
 
 @pytest.fixture(scope="module")
@@ -102,7 +99,6 @@ async def db_manager(tmpdir_factory):
     return manager
 
 
-
 @pytest_asyncio.fixture(scope="function")
 async def service(db_manager, event_loop, rabbitmq):
     service = PKIService(
@@ -116,8 +112,16 @@ async def service(db_manager, event_loop, rabbitmq):
 
 @pytest.fixture(scope="function")
 def minter(pki, event_loop, rabbitmq):
-    service = Minter(pki)
-    return service.handler(rabbitmq.url(), QUEUES)
+    service = PKIWorker(pki)
+    return service.minter(rabbitmq.url(), QUEUES)
+
+
+@pytest_asyncio.fixture(scope="function", autouse=True)
+async def pki_responder(pki, event_loop, rabbitmq):
+    service = PKIWorker(pki)
+    asyncio.ensure_future(service.rpc_responder(rabbitmq.url()))
+    yield service
+
 
 
 @pytest_asyncio.fixture(scope="function")

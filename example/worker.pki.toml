@@ -14,6 +14,12 @@
       exclusive = false
       auto_delete = false
 
+  [amqp.queues.ocsp]
+      name = "pki.ocsp"
+      durable = true
+      exclusive = false
+      auto_delete = false
+
 
 [pki]
 

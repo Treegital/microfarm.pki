@@ -1,5 +1,5 @@
-from peewee import JOIN, SQL, Case
-from .models import Request, Certificate
+from peewee import SQL, Case
+from .models import Request, Certificate, ReasonFlags
 
 
 def get_base_query():
@@ -35,6 +35,49 @@ def account_certificate(account: str, serial_number: str):
         get_base_query()
         .where(Certificate.serial_number == serial_number,
                Certificate.account == account)
+    )
+
+
+def revoke_account_certificate(
+        account: str, serial_number: str, reason: str):
+
+    return (
+        Certificate.update({
+            Certificate.revocation_date: SQL('CURRENT_TIMESTAMP'),
+            Certificate.revocation_reason: ReasonFlags[reason]
+        })
+        .where(
+            Certificate.account == account,
+            Certificate.serial_number == serial_number,
+            Certificate.revocation_date.is_null()
+        )
+    )
+
+
+def account_certificate_pem(account: str, serial_number: str):
+    return (
+        Certificate.select(
+            Certificate.pem_cert,
+            Certificate.pem_chain,
+            Certificate.revocation_date,
+            Certificate.revocation_reason.cast('CHAR')
+        ).where(
+            Certificate.serial_number == serial_number,
+            Certificate.account == account
+        )
+    )
+
+
+def certificate_pem(serial_number: str):
+    return (
+        Certificate.select(
+            Certificate.pem_cert,
+            Certificate.pem_chain,
+            Certificate.revocation_date,
+            Certificate.revocation_reason.cast('CHAR')
+        ).where(
+            Certificate.serial_number == serial_number,
+        )
     )
 
 

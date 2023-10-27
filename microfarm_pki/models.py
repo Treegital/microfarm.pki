@@ -4,7 +4,6 @@ from enum import Enum
 from peewee_aio import AIOModel
 from datetime import datetime
 from cryptography.x509 import ReasonFlags
-from peewee import IntegrityError
 
 
 def creation_date():

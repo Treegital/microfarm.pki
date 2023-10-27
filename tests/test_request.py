@@ -5,12 +5,13 @@ import hamcrest
 from datetime import datetime
 from freezegun import freeze_time
 from branding_iron.identity import Identity
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.x509 import ocsp, load_pem_x509_certificates, ReasonFlags
 
 
 @pytest.mark.asyncio
 async def test_request_certificate(
         service, pki_rpcservice, pki_rpcclient, minter, event_loop):
-
 
     response = await pki_rpcclient.list_requests("test")
     hamcrest.assert_that(response, hamcrest.has_entries({
@@ -193,3 +194,29 @@ async def test_request_certificate(
             "identity": "2.5.4.15=pytest,CN=Tester"
         })
     }))
+
+    response = await pki_rpcclient.get_certificate_pem("test", serial_number)
+    hamcrest.assert_that(response, hamcrest.has_entries({
+        "code": 200,
+        "type": "PEM",
+        "description": "Certificate chain",
+        "body": hamcrest.instance_of(bytes)
+    }))
+
+    certs = load_pem_x509_certificates(response['body'])
+    builder = ocsp.OCSPRequestBuilder()
+    builder = builder.add_certificate(certs[0], certs[1], hashes.SHA256())
+    req = builder.build()
+    data = req.public_bytes(serialization.Encoding.DER)
+    response = await pki_rpcclient.certificate_ocsp(data)
+    hamcrest.assert_that(response, hamcrest.has_entries({
+        'body': hamcrest.instance_of(bytes),
+        'code': 200,
+        'description': 'OCSP Response',
+        'type': 'DER'
+    }))
+    decoded = ocsp.load_der_ocsp_response(response['body'])
+    assert decoded.response_status == ocsp.OCSPResponseStatus.SUCCESSFUL
+    assert decoded.certificate_status == ocsp.OCSPCertStatus.REVOKED
+    assert decoded.revocation_time is not None
+    assert decoded.revocation_reason == ReasonFlags.superseded

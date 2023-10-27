@@ -116,7 +116,11 @@ class PKI(Bundle):
         private_key = branding_iron.keys.new_rsa_key()
         public_key = private_key.public_key()
         certificate = self.create_certificate(subject, public_key)
-        return Bundle(certificate, private_key, [self.certificate, *self.chain])
+        return Bundle(
+            certificate,
+            private_key,
+            [self.certificate, *self.chain]
+        )
 
     def verify_certificate(self, cert: x509.Certificate):
         return branding_iron.crypto.validate_certificate(

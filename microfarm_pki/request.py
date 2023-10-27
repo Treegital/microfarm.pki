@@ -14,7 +14,8 @@ def get_base_query():
             Request.requester,
             Request.submission_date,
             Certificate.serial_number,
-            Certificate.generation_date
+            Certificate.generation_date,
+            request_status.alias('status')
         )
         .join(Certificate, JOIN.LEFT_OUTER)
     )

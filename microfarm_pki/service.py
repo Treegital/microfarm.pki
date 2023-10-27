@@ -3,13 +3,15 @@ import logging
 import uuid
 import ormsgpack
 import typing as t
-from datetime import datetime, timezone
 from aiozmq import rpc
 from pathlib import Path
+from datetime import datetime
 from minicli import cli, run
+from peewee import SQL
 from peewee_aio import Manager
-from peewee import IntegrityError, JOIN, SQL, Case, Value
-from aio_pika import Message, connect, DeliveryMode
+from cryptography import x509
+from aio_pika.patterns import RPC
+from aio_pika import Message, connect, connect_robust, DeliveryMode
 from aio_pika.abc import (
     AbstractChannel, AbstractConnection, AbstractQueue,
     AbstractIncomingMessage
@@ -29,16 +31,22 @@ class Ordering(t.TypedDict):
     order: t.Literal['asc'] | t.Literal['desc']
 
 
+class MsgpackRPC(RPC):
+    CONTENT_TYPE = "application/msgpack"
+
+    def serialize(self, data: t.Any) -> bytes:
+        return ormsgpack.packb(data)
+
+    def deserialize(self, data: bytes) -> bytes:
+        return ormsgpack.unpackb(data)
+
+
 class PKIService(rpc.AttrHandler):
-    connection: AbstractConnection
-    channel: AbstractChannel
-    callback_queue: AbstractQueue
-    loop: asyncio.AbstractEventLoop
 
     def __init__(self, manager: Manager,
                  url: str,
                  queues: dict,
-                 loop = None) -> None:
+                 loop: asyncio.AbstractEventLoop = None) -> None:
         self.manager = manager
         self.url = url
         if loop is None:
@@ -48,9 +56,12 @@ class PKIService(rpc.AttrHandler):
         self.results = {}
 
     async def persist(self):
-        connection = await connect(self.url, loop=self.loop)
+        connection: AbstractConnection = await connect(
+            self.url, loop=self.loop
+        )
+
         async with connection:
-            channel = await connection.channel()
+            channel: AbstractChannel = await connection.channel()
             await channel.set_qos(prefetch_count=1)
             certificate_queue = await channel.declare_queue(
                 **self.queues['certificates']
@@ -85,9 +96,10 @@ class PKIService(rpc.AttrHandler):
                             self.results[message.correlation_id].set_result(
                                 data['serial_number']
                             )
-                    except Exception as err:
-                        if message.correlation_id in self.results:
-                            self.results[message.correlation_id].set_result(False)
+                    except Exception:
+                        amqp_logger.exception()
+                        if task := self.results.get(message.correlation_id):
+                            task.set_result(False)
                         await message.reject(requeue=False)
 
     @rpc.method
@@ -149,6 +161,55 @@ class PKIService(rpc.AttrHandler):
                     }
 
     @rpc.method
+    async def get_certificate_pem(self, account: str, serial_number: str):
+        query = certificate.account_certificate_pem(account, serial_number)
+        async with self.manager:
+            async with self.manager.connection():
+                try:
+                    cert = await query.namedtuples().get()
+                    return {
+                        "code": 200,
+                        "type": "PEM",
+                        "description": "Certificate chain",
+                        "body": cert.pem_cert + cert.pem_chain
+                    }
+                except Certificate.DoesNotExist:
+                    return {
+                        "code": 404,
+                        "type": "Error",
+                        "description": "Certificate does not exist.",
+                        "body": None
+                    }
+
+    @rpc.method
+    async def certificate_ocsp(self, der: bytes):
+        req = x509.ocsp.load_der_ocsp_request(der)
+        query = certificate.certificate_pem(str(req.serial_number))
+        async with self.manager:
+            async with self.manager.connection():
+                try:
+                    cert = await query.dicts().get()
+                except Certificate.DoesNotExist:
+                    return {
+                        "code": 404,
+                        "type": "Error",
+                        "description": "Certificate does not exist.",
+                        "body": None
+                    }
+
+        connection = await connect_robust(self.url, loop=self.loop)
+        async with connection:
+            channel = await connection.channel()
+            rpc = await MsgpackRPC.create(channel)
+            ocsp_response = await rpc.call('check_status', kwargs=cert)
+            return {
+                "code": 200,
+                "type": "DER",
+                "description": "OCSP Response",
+                "body": ocsp_response
+            }
+
+    @rpc.method
     async def list_requests(
             self,
             account: str,
@@ -205,7 +266,6 @@ class PKIService(rpc.AttrHandler):
                         "body": None
                     }
 
-
     @rpc.method
     async def generate_certificate(self, user: str, identity: str) -> dict:
         correlation_id = uuid.uuid4().hex
@@ -255,17 +315,8 @@ class PKIService(rpc.AttrHandler):
         async with self.manager:
             async with self.manager.connection():
                 try:
-                    req = await (
-                        Certificate
-                        .update({
-                            Certificate.revocation_date: SQL('CURRENT_TIMESTAMP'),
-                            Certificate.revocation_reason: ReasonFlags[reason]
-                        })
-                        .where(
-                            Certificate.account == account,
-                            Certificate.serial_number == serial_number,
-                            Certificate.revocation_date.is_null()
-                        )
+                    await certificate.revoke_account_certificate(
+                        account, serial_number, reason
                     )
                     return {
                         "code": 200,
