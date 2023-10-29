@@ -6,7 +6,6 @@ import typing as t
 from aiozmq import rpc
 from pathlib import Path
 from datetime import datetime
-from minicli import cli, run
 from peewee_aio import Manager
 from cryptography import x509
 from aio_pika.patterns import RPC
@@ -330,43 +329,3 @@ class PKIService(rpc.AttrHandler):
                         "description": "Certificate could not be revoked.",
                         "body": None
                     }
-
-
-@cli
-async def serve(config: Path) -> None:
-    import tomli
-    import logging.config
-
-    assert config.is_file()
-    with config.open("rb") as f:
-        settings = tomli.load(f)
-
-    if logconf := settings.get('logging'):
-        logging.config.dictConfigClass(logconf).configure()
-
-    # debug
-    logger = logging.getLogger('peewee')
-    logger.addHandler(logging.StreamHandler())
-    logger.setLevel(logging.DEBUG)
-
-    manager = Manager(settings['database']['url'])
-    manager.register(Request)
-    manager.register(Certificate)
-
-    async with manager:
-        async with manager.connection():
-            await manager.create_tables()
-
-    service = PKIService(
-        manager,
-        settings['amqp']['url'],
-        settings['amqp']
-    )
-    server = await rpc.serve_rpc(service, bind={settings['rpc']['bind']})
-    print(f" [x] PKI Service ({settings['rpc']['bind']})")
-    await service.persist()
-    server.close()
-
-
-if __name__ == '__main__':
-    run()

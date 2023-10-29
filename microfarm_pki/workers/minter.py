@@ -3,14 +3,12 @@ import logging
 import ormsgpack
 import typing as t
 from pathlib import Path
-from minicli import cli, run
 from aio_pika import Message, connect
 from aio_pika.abc import AbstractIncomingMessage
 from cryptography import x509
 from branding_iron import keys, certificate
-from .bundle import PKI
-from .pki import create_pki
-from .responder import Responder
+from microfarm_pki.bundle import PKI
+from microfarm_pki.pki import create_pki
 
 
 rpc_logger = logging.getLogger('microfarm_pki.rpc')
@@ -109,40 +107,3 @@ class Minter:
                             ),
                             routing_key=message.reply_to,
                         )
-
-
-@cli
-async def work(config: Path):
-    import tomli
-    import logging.config
-
-    assert config.is_file()
-    with config.open("rb") as f:
-        settings = tomli.load(f)
-
-    if logconf := settings.get('logging'):
-        logging.config.dictConfigClass(logconf).configure()
-
-    pki: PKI = load_pki(settings['pki'])
-    minter = Minter(pki)
-    responder = Responder(pki)
-
-    await asyncio.gather(
-        minter.listen(settings['amqp']['url'], settings['amqp']['queues']),
-        responder.listen(settings['amqp']['url'])
-    )
-
-
-@cli
-def generate(config: Path):
-    import tomli
-
-    assert config.is_file()
-    with config.open("rb") as f:
-        settings = tomli.load(f)
-
-    create_pki(settings['pki'])
-
-
-if __name__ == "__main__":
-    run()

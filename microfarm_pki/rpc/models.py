@@ -2,18 +2,17 @@ import peewee
 import typing as t
 from enum import Enum
 from peewee_aio import AIOModel
-from datetime import datetime
+from datetime import datetime, timezone
 from cryptography.x509 import ReasonFlags
 
 
 def creation_date():
     # Separate method to facilitate testing
-    return datetime.utcnow()
+    return datetime.now(timezone.utc)
 
 
 class EnumField(peewee.CharField):
-    """
-    This class enable an Enum like field for Peewee
+    """This class enable an Enum like field for Peewee
     """
 
     def __init__(
@@ -36,6 +35,7 @@ class Request(AIOModel):
 
     class Meta:
         table_name = 'requests'
+        order_by = ['-submission_date']
 
     id = peewee.FixedCharField(max_length=32, primary_key=True)
     requester = peewee.CharField()
@@ -47,6 +47,7 @@ class Certificate(AIOModel):
 
     class Meta:
         table_name = 'certificates'
+        order_by = ['-generation_date']
 
     account = peewee.CharField()
     serial_number = peewee.CharField(primary_key=True)

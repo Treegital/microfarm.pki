@@ -1,25 +1,14 @@
 import asyncio
 import logging
 import typing as t
-import ormsgpack
 from datetime import datetime, timezone
 from aio_pika import connect_robust
-from aio_pika.patterns import RPC
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
+from .rpc import MsgpackRPC
 
 
 rpc_logger = logging.getLogger('microfarm_pki.rpc')
-
-
-class MsgpackRPC(RPC):
-    CONTENT_TYPE = "application/msgpack"
-
-    def serialize(self, data: t.Any) -> bytes:
-        return ormsgpack.packb(data)
-
-    def deserialize(self, data: bytes) -> bytes:
-        return ormsgpack.unpackb(data)
 
 
 class Responder:
