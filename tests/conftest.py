@@ -5,12 +5,14 @@ import testing.rabbitmq
 from uuid import UUID
 from aiozmq import rpc
 from peewee_aio import Manager
+from functools import partial
+from pickle import dumps, loads, HIGHEST_PROTOCOL
 from branding_iron import keys, certificate
-from microfarm_pki.bundle import PKI
-from microfarm_pki.models import Request, Certificate
-from microfarm_pki.service import PKIService
-from microfarm_pki.worker import Minter
-from microfarm_pki.responder import Responder
+from microfarm_pki.pki import PKI
+from microfarm_pki.sql import Request, Certificate
+from microfarm_pki.clerk import PKIClerk
+from microfarm_pki.minter import Minter
+from microfarm_pki.ocsp import Responder
 
 
 root_cert = certificate.pem_decrypt_x509(
@@ -50,18 +52,18 @@ cz0A
 
 
 QUEUES = {
-  "requests": {
-      "name": "pki.requests",
-      "durable": True,
-      "exclusive": False,
-      "auto_delete": False,
-  },
-  "certificates": {
-      "name": "pki.certificates",
-      "durable": True,
-      "exclusive": False,
-      "auto_delete": False,
-  }
+    "requests": {
+        "name": "pki.requests",
+        "durable": True,
+        "exclusive": False,
+        "auto_delete": False,
+    },
+    "certificates": {
+        "name": "pki.certificates",
+        "durable": True,
+        "exclusive": False,
+        "auto_delete": False,
+    }
 }
 
 
@@ -102,7 +104,7 @@ async def db_manager(tmpdir_factory):
 
 @pytest_asyncio.fixture(scope="function")
 async def service(db_manager, event_loop, rabbitmq):
-    service = PKIService(
+    service = PKIClerk(
         db_manager,
         url=rabbitmq.url(),
         queues=QUEUES,
@@ -117,17 +119,22 @@ def minter(pki, event_loop, rabbitmq):
     return service.listen(rabbitmq.url(), QUEUES)
 
 
-@pytest_asyncio.fixture(scope="function", autouse=True)
-async def pki_responder(pki, event_loop, rabbitmq):
-    service = Responder(pki)
-    await service.start(rabbitmq.url())
-    yield service
-    await service.stop()
+@pytest.fixture(autouse=True, scope="function")
+def pki_responder(pki, event_loop, rabbitmq):
+    service = Responder(pki, event_loop)
+    return service.listen(rabbitmq.url())
 
 
 @pytest_asyncio.fixture(scope="function")
 async def pki_rpcservice(service):
-    server = await rpc.serve_rpc(service, bind="inproc://test")
+    from freezegun.api import FakeDatetime
+
+    translation_table = {
+        0: (FakeDatetime, partial(dumps, protocol=HIGHEST_PROTOCOL), loads),
+    }
+
+    server = await rpc.serve_rpc(
+        service, bind="inproc://test", translation_table=translation_table)
     try:
         yield server
     finally:
@@ -137,7 +144,15 @@ async def pki_rpcservice(service):
 
 @pytest_asyncio.fixture(scope="function")
 async def pki_rpcclient():
-    client = await rpc.connect_rpc(connect="inproc://test", timeout=0.5)
+    from freezegun.api import FakeDatetime
+
+    translation_table = {
+        0: (FakeDatetime, partial(dumps, protocol=HIGHEST_PROTOCOL), loads),
+    }
+
+    client = await rpc.connect_rpc(
+        connect="inproc://test", timeout=0.5,
+        translation_table=translation_table)
     try:
         yield client.call
     finally:

@@ -1,14 +1,11 @@
+import calendar
 import peewee
 import typing as t
 from enum import Enum
 from peewee_aio import AIOModel
 from datetime import datetime, timezone
 from cryptography.x509 import ReasonFlags
-
-
-def creation_date():
-    # Separate method to facilitate testing
-    return datetime.now(timezone.utc)
+from microfarm_pki.utils import current_ts
 
 
 class EnumField(peewee.CharField):
@@ -40,7 +37,7 @@ class Request(AIOModel):
     id = peewee.FixedCharField(max_length=32, primary_key=True)
     requester = peewee.CharField()
     identity = peewee.CharField()
-    submission_date = peewee.DateTimeField(default=creation_date)
+    submission_date = peewee.TimestampField(utc=True, default=current_ts)
 
 
 class Certificate(AIOModel):
@@ -55,10 +52,10 @@ class Certificate(AIOModel):
     pem_cert = peewee.BlobField()
     pem_chain = peewee.BlobField()
     pem_private_key = peewee.BlobField()
-    valid_from = peewee.DateTimeField()
-    valid_until = peewee.DateTimeField()
-    generation_date = peewee.DateTimeField(default=creation_date)
-    revocation_date = peewee.DateTimeField(null=True)
+    valid_from = peewee.TimestampField()
+    valid_until = peewee.TimestampField()
+    generation_date = peewee.TimestampField(utc=True, default=current_ts)
+    revocation_date = peewee.TimestampField(null=True, default=None)
     revocation_reason = EnumField(ReasonFlags, null=True)
     request_id = peewee.ForeignKeyField(
         Request, backref='certificate', unique=True)

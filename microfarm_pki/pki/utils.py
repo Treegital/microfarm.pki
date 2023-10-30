@@ -2,6 +2,7 @@ import typing as t
 from pathlib import Path
 from branding_iron import keys, pki, certificate
 from branding_iron.identity import Identity
+from . import PKI
 
 
 def data_to_file(path: t.Union[Path, str], data: bytes):
@@ -77,3 +78,31 @@ def create_pki(settings: dict, debug: bool = False):
             settings['intermediate']['password'].encode()
         )
     )
+
+
+def data_from_file(path: t.Union[Path, str]) -> t.Optional[bytes]:
+    path = Path(path)  # idempotent.
+    if not path.exists():
+        raise FileNotFoundError(f'`{path}` does not exist.')
+
+    if not path.is_file():
+        raise TypeError(f'`{path}` should be a file.')
+
+    with path.open('rb') as fd:
+        data = fd.read()
+
+    return data
+
+
+def load_pki(settings):
+    root_cert = certificate.pem_decrypt_x509(
+        data_from_file(settings['root']['cert_path'])
+    )
+    intermediate_cert = certificate.pem_decrypt_x509(
+        data_from_file(settings['intermediate']['cert_path'])
+    )
+    intermediate_key = keys.pem_decrypt_key(
+        data_from_file(settings['intermediate']['key_path']),
+        settings['intermediate']['password'].encode()
+    )
+    return PKI(intermediate_cert, intermediate_key, [root_cert])

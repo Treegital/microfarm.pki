@@ -3,7 +3,6 @@ import ormsgpack
 from aio_pika.patterns import RPC
 
 
-
 class MsgpackRPC(RPC):
     CONTENT_TYPE = "application/msgpack"
 
