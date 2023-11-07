@@ -21,14 +21,19 @@ def get_base_query():
     )
 
 
-def account_request(account: str, request_id: str):
-    return get_base_query().where(
-        Request.requester == account,
-        Request.id == request_id
-    )
+def create_request(id: str, requester: str, identity: str):
+    return Request.create(id=id, requester=requester, identity=identity)
 
 
-def account_requests(account: str):
-    return get_base_query().where(
-        Request.requester == account
-    )
+def get_request(request_id: str, account: str | None = None):
+    query = get_base_query().where(Request.id == request_id)
+    if account:
+        return query.where(Request.requester == account)
+    return query
+
+
+def get_requests(account: str | None = None):
+    query = get_base_query()
+    if account:
+        return query.where(Request.requester == account)
+    return query

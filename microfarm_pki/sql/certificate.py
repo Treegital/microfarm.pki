@@ -1,9 +1,18 @@
-from peewee import SQL, Case
+from peewee import Case, Value
+from datetime import datetime
 from .models import Request, Certificate, ReasonFlags
+from microfarm_pki.utils import date2ts, current_ts, strdate2ts
+
+
+def create_certificate(request_id, **data):
+    # We translate datetime to timestamp
+    data['valid_from'] = strdate2ts(data['valid_from'])
+    data['valid_until'] = strdate2ts(data['valid_until'])
+    return Certificate.create(request_id=request_id, **data)
 
 
 def get_base_query():
-    now = SQL("CURRENT_TIMESTAMP")
+    now = Value(current_ts())
     certificate_status = Case(None, [
         (Certificate.revocation_date, 'revoked'),
         (
@@ -30,31 +39,42 @@ def get_base_query():
     )
 
 
-def account_certificate(account: str, serial_number: str):
-    return (
+def get_certificate(serial_number: str, account: str | None = None):
+    query = (
         get_base_query()
-        .where(Certificate.serial_number == serial_number,
-               Certificate.account == account)
+        .where(Certificate.serial_number == serial_number)
     )
+    if account:
+        return query.where(Certificate.account == account)
+    return query
 
 
-def revoke_account_certificate(
-        account: str, serial_number: str, reason: str):
+def get_certificates(account: str | None = None):
+    query = get_base_query()
+    if account:
+        return query.where(Certificate.account == account)
+    return query
 
-    return (
+
+def revoke_certificate(
+        serial_number: str, reason: str, account: str | None = None):
+
+    query = (
         Certificate.update({
-            Certificate.revocation_date: SQL('CURRENT_TIMESTAMP'),
+            Certificate.revocation_date: current_ts(),
             Certificate.revocation_reason: ReasonFlags[reason]
         })
         .where(
-            Certificate.account == account,
             Certificate.serial_number == serial_number,
             Certificate.revocation_date.is_null()
         )
     )
+    if account:
+        return query.where(Certificate.account == account)
+    return query
 
 
-def account_certificate_pem(account: str, serial_number: str):
+def get_certificate_pem(serial_number: str, account: str | None = None):
     return (
         Certificate.select(
             Certificate.pem_cert,
@@ -62,27 +82,9 @@ def account_certificate_pem(account: str, serial_number: str):
             Certificate.revocation_date,
             Certificate.revocation_reason.cast('CHAR')
         ).where(
-            Certificate.serial_number == serial_number,
-            Certificate.account == account
+            Certificate.serial_number == serial_number
         )
     )
-
-
-def certificate_pem(serial_number: str):
-    return (
-        Certificate.select(
-            Certificate.pem_cert,
-            Certificate.pem_chain,
-            Certificate.revocation_date,
-            Certificate.revocation_reason.cast('CHAR')
-        ).where(
-            Certificate.serial_number == serial_number,
-        )
-    )
-
-
-def account_certificates(account: str):
-    return (
-        get_base_query()
-        .where(Certificate.account == account)
-    )
+    if account:
+        return query.where(Certificate.account == account)
+    return query

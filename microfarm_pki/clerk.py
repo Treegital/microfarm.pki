@@ -4,21 +4,15 @@ import uuid
 import ormsgpack
 import typing as t
 from aiozmq import rpc
-from pathlib import Path
-from datetime import datetime
-from minicli import cli, run
 from peewee_aio import Manager
 from cryptography import x509
-from aio_pika.patterns import RPC
 from aio_pika import Message, connect, connect_robust, DeliveryMode
 from aio_pika.abc import (
     AbstractChannel, AbstractConnection, AbstractQueue,
     AbstractIncomingMessage
 )
-from .models import Request, Certificate
-from . import request
-from . import certificate
-from . import pagination
+from microfarm_pki import sql
+from microfarm_pki.rpc import MsgpackRPC
 
 
 rpc_logger = logging.getLogger('microfarm_pki.rpc')
@@ -30,17 +24,15 @@ class Ordering(t.TypedDict):
     order: t.Literal['asc'] | t.Literal['desc']
 
 
-class MsgpackRPC(RPC):
-    CONTENT_TYPE = "application/msgpack"
+class PKIClerk(rpc.AttrHandler):
+    """The PKI clerk is the RPC gateway to the PKI.
+    It handles all the frontend requests and dispatches them.
+    It communites with 3 backends:
 
-    def serialize(self, data: t.Any) -> bytes:
-        return ormsgpack.packb(data)
-
-    def deserialize(self, data: bytes) -> bytes:
-        return ormsgpack.unpackb(data)
-
-
-class PKIService(rpc.AttrHandler):
+    1. the SQL database holding the records.
+    2. the minting service (AMQP)
+    3. the OCSP service (AMQP RPC)
+    """
 
     def __init__(self, manager: Manager,
                  url: str,
@@ -52,7 +44,7 @@ class PKIService(rpc.AttrHandler):
             loop = asyncio.get_running_loop()
         self.loop = loop
         self.queues = queues
-        self.results = {}
+        self.tasks: t.MutableMapping[str, asyncio.Future] = {}
 
     async def persist(self):
         connection: AbstractConnection = await connect(
@@ -75,31 +67,21 @@ class PKIService(rpc.AttrHandler):
                         certificate = ormsgpack.unpackb(message.body)
                         async with self.manager:
                             async with self.manager.connection():
-                                data = certificate['data']
-                                # SQLite doesn't have a Datetime Format
-                                # We need to make sure it's understood
-                                data['valid_from'] = datetime.strptime(
-                                    data['valid_from'],
-                                    '%Y-%m-%dT%H:%M:%S'
-                                )
-                                data['valid_until'] = datetime.strptime(
-                                    data['valid_until'],
-                                    '%Y-%m-%dT%H:%M:%S'
-                                )
-                                await Certificate.create(
+                                await sql.create_certificate(
                                     request_id=message.correlation_id,
-                                    **data
+                                    **certificate['data']
                                 )
-
-                        if message.correlation_id in self.results:
-                            self.results[message.correlation_id].set_result(
-                                data['serial_number']
-                            )
-                    except Exception:
-                        amqp_logger.exception()
-                        if task := self.results.get(message.correlation_id):
-                            task.set_result(False)
+                                await message.ack()
+                        if task := self.tasks.get(message.correlation_id):
+                            task.set_result(True)
+                    except Exception as err:
+                        amqp_logger.exception('')
                         await message.reject(requeue=False)
+                        if task := self.tasks.get(message.correlation_id):
+                            task.set_result(False)
+                    finally:
+                        if message.correlation_id in self.tasks:
+                            del self.tasks[message.correlation_id]
 
     @rpc.method
     async def list_certificates(
@@ -109,11 +91,11 @@ class PKIService(rpc.AttrHandler):
             limit: int = 0,
             sort_by: t.List[Ordering] = []):
 
-        query = certificate.account_certificates(account)
-        paginated = pagination.paginate(
-            pagination.sort(
+        query = sql.get_certificates(account=account)
+        paginated = sql.paginate(
+            sql.sort(
                 query,
-                pagination.resolve_order_by(Certificate, tuple(sort_by))
+                sql.resolve_order_by(sql.Certificate, tuple(sort_by))
             ),
             offset=offset,
             limit=limit
@@ -140,7 +122,7 @@ class PKIService(rpc.AttrHandler):
 
     @rpc.method
     async def get_certificate(self, account: str, serial_number: str):
-        query = certificate.account_certificate(account, serial_number)
+        query = sql.get_certificate(serial_number, account=account)
         async with self.manager:
             async with self.manager.connection():
                 try:
@@ -161,7 +143,7 @@ class PKIService(rpc.AttrHandler):
 
     @rpc.method
     async def get_certificate_pem(self, account: str, serial_number: str):
-        query = certificate.account_certificate_pem(account, serial_number)
+        query = sql.get_certificate_pem(serial_number, account=account)
         async with self.manager:
             async with self.manager.connection():
                 try:
@@ -183,7 +165,7 @@ class PKIService(rpc.AttrHandler):
     @rpc.method
     async def certificate_ocsp(self, der: bytes):
         req = x509.ocsp.load_der_ocsp_request(der)
-        query = certificate.certificate_pem(str(req.serial_number))
+        query = sql.get_certificate_pem(str(req.serial_number))
         async with self.manager:
             async with self.manager.connection():
                 try:
@@ -196,7 +178,10 @@ class PKIService(rpc.AttrHandler):
                         "body": None
                     }
 
-        connection = await connect_robust(self.url, loop=self.loop)
+        connection = await connect_robust(
+            self.url, loop=self.loop,
+            client_properties={"connection_name": "caller"},
+        )
         async with connection:
             channel = await connection.channel()
             rpc = await MsgpackRPC.create(channel)
@@ -216,11 +201,11 @@ class PKIService(rpc.AttrHandler):
             limit: int = 0,
             sort_by: t.List[Ordering] = []):
 
-        query = request.account_requests(account)
-        paginated = pagination.paginate(
-            pagination.sort(
+        query = sql.get_requests(account=account)
+        paginated = sql.paginate(
+            sql.sort(
                 query,
-                pagination.resolve_order_by(Request, tuple(sort_by))
+                sql.resolve_order_by(sql.Request, tuple(sort_by))
             ),
             offset=offset,
             limit=limit
@@ -246,7 +231,7 @@ class PKIService(rpc.AttrHandler):
 
     @rpc.method
     async def get_request(self, account: str, request_id: str):
-        query = request.account_request(account, request_id)
+        query = sql.get_request(request_id, account=account)
         async with self.manager:
             async with self.manager.connection():
                 try:
@@ -280,7 +265,7 @@ class PKIService(rpc.AttrHandler):
             )
             async with self.manager:
                 async with self.manager.connection():
-                    await Request.create(
+                    await sql.create_request(
                         id=correlation_id,
                         requester=user,
                         identity=identity,
@@ -299,7 +284,7 @@ class PKIService(rpc.AttrHandler):
                         ),
                         routing_key=request_queue.name,
                     )
-        self.results[correlation_id] = self.loop.create_future()
+        self.tasks[correlation_id] = asyncio.Future()
         return {
             "code": 201,
             "type": "Token",
@@ -314,8 +299,8 @@ class PKIService(rpc.AttrHandler):
         async with self.manager:
             async with self.manager.connection():
                 try:
-                    await certificate.revoke_account_certificate(
-                        account, serial_number, reason
+                    await sql.revoke_certificate(
+                        serial_number, reason, account=account
                     )
                     return {
                         "code": 200,
@@ -330,43 +315,3 @@ class PKIService(rpc.AttrHandler):
                         "description": "Certificate could not be revoked.",
                         "body": None
                     }
-
-
-@cli
-async def serve(config: Path) -> None:
-    import tomli
-    import logging.config
-
-    assert config.is_file()
-    with config.open("rb") as f:
-        settings = tomli.load(f)
-
-    if logconf := settings.get('logging'):
-        logging.config.dictConfigClass(logconf).configure()
-
-    # debug
-    logger = logging.getLogger('peewee')
-    logger.addHandler(logging.StreamHandler())
-    logger.setLevel(logging.DEBUG)
-
-    manager = Manager(settings['database']['url'])
-    manager.register(Request)
-    manager.register(Certificate)
-
-    async with manager:
-        async with manager.connection():
-            await manager.create_tables()
-
-    service = PKIService(
-        manager,
-        settings['amqp']['url'],
-        settings['amqp']
-    )
-    server = await rpc.serve_rpc(service, bind={settings['rpc']['bind']})
-    print(f" [x] PKI Service ({settings['rpc']['bind']})")
-    await service.persist()
-    server.close()
-
-
-if __name__ == '__main__':
-    run()

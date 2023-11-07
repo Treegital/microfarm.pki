@@ -21,11 +21,11 @@ url = "aiosqlite:///certificates.db"
     exclusive = false
     auto_delete = false
 
-  [amqp.ocsp]
-    name = "pki.ocsp"
-    durable = true
-    exclusive = false
-    auto_delete = false
+  [amqp.rpc]
+    name = "pki.rpc"
+    durable = false
+    exclusive = true
+    auto_delete = true
 
 
 [logging]

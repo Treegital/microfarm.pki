@@ -31,8 +31,7 @@ test = [
 ]
 
 [project.scripts]
-mfpki_service = "microfarm_pki.service:run"
-mfpki_worker = "microfarm_pki.worker:run"
+mfpki = "microfarm_pki:run"
 
 [tool.setuptools.packages.find]
 where = ["."]

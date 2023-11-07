@@ -2,15 +2,14 @@ import asyncio
 import logging
 import ormsgpack
 import typing as t
+from datetime import datetime
 from pathlib import Path
-from minicli import cli, run
 from aio_pika import Message, connect
 from aio_pika.abc import AbstractIncomingMessage
 from cryptography import x509
 from branding_iron import keys, certificate
-from .bundle import PKI
-from .pki import create_pki
-from .responder import Responder
+from microfarm_pki.pki import PKI
+from microfarm_pki.pki.utils import create_pki
 
 
 rpc_logger = logging.getLogger('microfarm_pki.rpc')
@@ -27,32 +26,12 @@ def generate_password(length: int) -> str:
     return "".join(chars[c % len(chars)] for c in urandom(length))
 
 
-def data_from_file(path: t.Union[Path, str]) -> t.Optional[bytes]:
-    path = Path(path)  # idempotent.
-    if not path.exists():
-        raise FileNotFoundError(f'`{path}` does not exist.')
+from freezegun.api import FakeDatetime
 
-    if not path.is_file():
-        raise TypeError(f'`{path}` should be a file.')
-
-    with path.open('rb') as fd:
-        data = fd.read()
-
-    return data
-
-
-def load_pki(settings):
-    root_cert = certificate.pem_decrypt_x509(
-        data_from_file(settings['root']['cert_path'])
-    )
-    intermediate_cert = certificate.pem_decrypt_x509(
-        data_from_file(settings['intermediate']['cert_path'])
-    )
-    intermediate_key = keys.pem_decrypt_key(
-        data_from_file(settings['intermediate']['key_path']),
-        settings['intermediate']['password'].encode()
-    )
-    return PKI(intermediate_cert, intermediate_key, [root_cert])
+def datetime_default(obj):
+    if isinstance(obj, (FakeDatetime, datetime)):
+        return obj.isoformat()
+    raise TypeError
 
 
 class Minter:
@@ -101,7 +80,8 @@ class Minter:
                         assert message.reply_to is not None
                         data = ormsgpack.unpackb(message.body)
                         result = self.mint(data)
-                        response = ormsgpack.packb(result)
+                        response = ormsgpack.packb(
+                            result, default=datetime_default)
                         await exchange.publish(
                             Message(
                                 body=response,
@@ -109,40 +89,3 @@ class Minter:
                             ),
                             routing_key=message.reply_to,
                         )
-
-
-@cli
-async def work(config: Path):
-    import tomli
-    import logging.config
-
-    assert config.is_file()
-    with config.open("rb") as f:
-        settings = tomli.load(f)
-
-    if logconf := settings.get('logging'):
-        logging.config.dictConfigClass(logconf).configure()
-
-    pki: PKI = load_pki(settings['pki'])
-    minter = Minter(pki)
-    responder = Responder(pki)
-
-    await asyncio.gather(
-        minter.listen(settings['amqp']['url'], settings['amqp']['queues']),
-        responder.listen(settings['amqp']['url'])
-    )
-
-
-@cli
-def generate(config: Path):
-    import tomli
-
-    assert config.is_file()
-    with config.open("rb") as f:
-        settings = tomli.load(f)
-
-    create_pki(settings['pki'])
-
-
-if __name__ == "__main__":
-    run()
