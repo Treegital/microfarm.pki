@@ -1,6 +1,5 @@
 import typing as t
 from typing_extensions import TypedDict
-from functools import cache
 from peewee import Ordering
 
 
@@ -12,7 +11,6 @@ class ColumnSorting(TypedDict):
 Sorting = t.Iterable[ColumnSorting]
 
 
-@cache
 def resolve_order_by(model, ordering: Sorting) -> t.Iterator[Ordering]:
     for column_order in ordering:
         sort_field = getattr(model, column_order['key'])
