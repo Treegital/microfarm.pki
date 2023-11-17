@@ -56,6 +56,27 @@ def get_certificates(account: str | None = None):
     return query
 
 
+def get_valid_certificates(account: str | None = None):
+    now = Value(current_ts())
+    return (
+        Certificate.select(
+            Certificate.account,
+            Certificate.serial_number,
+            Certificate.fingerprint,
+            Certificate.valid_from,
+            Certificate.valid_until,
+            Certificate.generation_date,
+            Request.identity
+        )
+        .join(Request).where(
+            now.between(
+                Certificate.valid_from, Certificate.valid_until
+            ),
+            Certificate.revocation_date.is_null()
+        )
+    )
+
+
 def revoke_certificate(
         serial_number: str, reason: str, account: str | None = None):
 

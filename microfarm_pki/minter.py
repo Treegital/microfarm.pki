@@ -4,6 +4,7 @@ import ormsgpack
 import typing as t
 from datetime import datetime
 from pathlib import Path
+from freezegun.api import FakeDatetime
 from aio_pika import Message, connect
 from aio_pika.abc import AbstractIncomingMessage
 from cryptography import x509
@@ -25,8 +26,6 @@ def generate_password(length: int) -> str:
     from os import urandom
     return "".join(chars[c % len(chars)] for c in urandom(length))
 
-
-from freezegun.api import FakeDatetime
 
 def datetime_default(obj):
     if isinstance(obj, (FakeDatetime, datetime)):

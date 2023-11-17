@@ -72,6 +72,7 @@ class PKIClerk(rpc.AttrHandler):
                                     **certificate['data']
                                 )
                                 await message.ack()
+                                print(certificate['password'])
                         if task := self.tasks.get(message.correlation_id):
                             task.set_result(True)
                     except Exception as err:
@@ -92,6 +93,43 @@ class PKIClerk(rpc.AttrHandler):
             sort_by: t.List[Ordering] = []):
 
         query = sql.get_certificates(account=account)
+        paginated = sql.paginate(
+            sql.sort(
+                query,
+                sql.resolve_order_by(sql.Certificate, tuple(sort_by))
+            ),
+            offset=offset,
+            limit=limit
+        )
+
+        async with self.manager:
+            async with self.manager.connection():
+                results = await paginated.dicts()
+                total = int(await query.count())
+
+        return {
+            "code": 200,
+            "type": "PaginatedSet[CertificateInfo]",
+            "description": None,
+            "body": {
+                "metadata": {
+                    "total": total,
+                    "offset": offset or None,
+                    "page_size": limit or None
+                },
+                "items": results
+            }
+        }
+
+    @rpc.method
+    async def list_valid_certificates(
+            self,
+            account: str,
+            offset: int = 0,
+            limit: int = 0,
+            sort_by: t.List[Ordering] = []):
+
+        query = sql.get_valid_certificates(account=account)
         paginated = sql.paginate(
             sql.sort(
                 query,
@@ -272,7 +310,6 @@ class PKIClerk(rpc.AttrHandler):
                     )
                     await channel.default_exchange.publish(
                         Message(
-
                             ormsgpack.packb({
                                 "user": user,
                                 "identity": identity
