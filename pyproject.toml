@@ -20,6 +20,7 @@ dependencies = [
     "peewee",
     "peewee_aio[aiosqlite]",
     "tomli",
+    "freezegun"
 ]
 
 [project.optional-dependencies]
@@ -27,7 +28,8 @@ test = [
   "pytest",
   "pytest-asyncio",
   "testing.rabbitmq",
-  "pyhamcrest"
+  "pyhamcrest",
+  "freezegun"
 ]
 
 [project.scripts]
