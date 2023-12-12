@@ -2,6 +2,7 @@ import typing as t
 from pathlib import Path
 from branding_iron import keys, pki, certificate
 from branding_iron.identity import Identity
+from branding_iron.crypto import pkcs7_detached_signature
 from . import PKI
 
 
@@ -106,3 +107,11 @@ def load_pki(settings):
         settings['intermediate']['password'].encode()
     )
     return PKI(intermediate_cert, intermediate_key, [root_cert])
+
+
+def sign(data: bytes, cert_pem: bytes, chain_pem: bytes, privkey_pem: bytes, secret: bytes):
+    key =  keys.pem_decrypt_key(privkey_pem, secret)
+    cert = certificate.pem_decrypt_x509(cert_pem)
+    chain = certificate.pem_decrypt_x509chain(chain_pem)
+    signed = pkcs7_detached_signature(data, cert, key, chain)
+    return signed

@@ -1,3 +1,4 @@
+
 import asyncio
 import logging
 import uuid
@@ -12,6 +13,7 @@ from aio_pika.abc import (
     AbstractIncomingMessage
 )
 from microfarm_pki import sql
+import microfarm_pki.pki.utils as crypto_utils
 from microfarm_pki.rpc import MsgpackRPC
 
 
@@ -352,3 +354,45 @@ class PKIClerk(rpc.AttrHandler):
                         "description": "Certificate could not be revoked.",
                         "body": None
                     }
+
+    @rpc.method
+    async def sign(
+            self, account: str, data: bytes, serial_number: str, secret: str) -> dict:
+
+        query = sql.get_valid_certificate_pem(
+            serial_number, account=account
+        )
+        async with self.manager:
+            async with self.manager.connection():
+                try:
+                    cert = await query.dicts().get()
+                except Certificate.DoesNotExist:
+                    return {
+                        "code": 404,
+                        "type": "Error",
+                        "description": "Certificate does not exist.",
+                        "body": None
+                    }
+
+        try:
+            signature = crypto_utils.sign(
+                data,
+                cert['pem_cert'],
+                cert['pem_chain'],
+                cert['pem_private_key'],
+                secret
+            )
+        except ValueError:
+            # bad decrypt
+            return {
+                "code": 400,
+                "type": "Error",
+                "description": "Certificate could not be activated.",
+                "body": None
+            }
+        return {
+            "code": 200,
+            "type": "PKC7S",
+            "description": "Data was signed.",
+            "body": signature
+        }

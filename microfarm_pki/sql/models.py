@@ -1,4 +1,3 @@
-import calendar
 import peewee
 import typing as t
 from enum import Enum

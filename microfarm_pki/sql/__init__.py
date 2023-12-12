@@ -7,5 +7,6 @@ from .certificate import (
     get_certificates,
     get_valid_certificates,
     get_certificate_pem,
+    get_valid_certificate_pem,
     revoke_certificate
 )

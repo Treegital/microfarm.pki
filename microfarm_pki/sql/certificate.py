@@ -80,14 +80,19 @@ def get_valid_certificates(account: str | None = None):
 def revoke_certificate(
         serial_number: str, reason: str, account: str | None = None):
 
+    ts = current_ts()
+    now = Value(ts)
     query = (
         Certificate.update({
-            Certificate.revocation_date: current_ts(),
+            Certificate.revocation_date: ts,
             Certificate.revocation_reason: ReasonFlags[reason]
         })
         .where(
             Certificate.serial_number == serial_number,
-            Certificate.revocation_date.is_null()
+            Certificate.revocation_date.is_null(),
+            now.between(
+                Certificate.valid_from, Certificate.valid_until
+            )
         )
     )
     if account:
@@ -104,6 +109,27 @@ def get_certificate_pem(serial_number: str, account: str | None = None):
             Certificate.revocation_reason.cast('CHAR')
         ).where(
             Certificate.serial_number == serial_number
+        )
+    )
+    if account:
+        return query.where(Certificate.account == account)
+    return query
+
+
+def get_valid_certificate_pem(serial_number: str, account: str | None = None):
+
+    now = Value(current_ts())
+    return (
+        Certificate.select(
+            Certificate.pem_cert,
+            Certificate.pem_chain,
+            Certificate.pem_private_key
+        ).where(
+            Certificate.serial_number == serial_number,
+            Certificate.revocation_date.is_null(),
+            now.between(
+                Certificate.valid_from, Certificate.valid_until
+            )
         )
     )
     if account:
